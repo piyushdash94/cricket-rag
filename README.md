@@ -1,0 +1,101 @@
+# cricket-rag
+
+**Pandit**, an IPL question-answering agent over 19 seasons of ball-by-ball data (2008–2026).
+Every number in an answer comes from SQL; the LLM only decides what kind of question it is and writes the
+prose, and a validator checks the prose against the evidence before it is shown.
+
+Built on the [cricbot](https://github.com/piyushdash94/cricbot) archive. Free and CPU-only: DuckDB, LanceDB,
+fastembed (ONNX), and Groq's free tier for the LLM.
+
+![How a question is answered](docs/pipeline.svg)
+
+## How it works
+
+1. **Question frame (code, no LLM).** Players, teams, seasons, stage, phase, innings and over are linked by
+   code: full names, nicknames, surnames, typos ("kholi"), era-aware team names.
+2. **Fast checks.** Ambiguous names get a clarifying question; other competitions and data the archive
+   doesn't hold (captaincy, auctions, ball speed) get a plain "can't answer" with no queries run.
+3. **Intent form (one small LLM call).** The model fills a fixed-choice form: *answer* (count, rank, value,
+   moment, story, compare…), *unit* (player, team, season, match, innings, partnership…), *measure*, *scope*.
+   It never extracts entities.
+4. **Route table → programs.** The form picks an ordered list of programs:
+   *story* (match facts + momentum shifts), *event* (34k notable moments: wickets, partnerships, drops,
+   hat-tricks…), *stats* (cricbot's verified queries), *match*, *counts*, *team phase*, *fielding*,
+   *search* (BM25 over one-over commentary chunks), and a guarded *SQL finder* (one read-only SELECT
+   written by the LLM over documented views).
+5. **Shape check.** A result keyed by the wrong unit ("which season…" answered with a list of players) or a
+   writer that can't answer from it moves on to the next program.
+6. **Writer + validator.** One LLM call writes ≤5 cited sentences; the validator rejects uncited facts,
+   numbers not in the evidence and names not in the sources, then retries once or falls back to the evidence.
+
+Momentum shifts (collapses, scoring bursts, squeezes, chase swings, dropped catches) come from cricbot's
+detector; the decisive shift is always the strongest one in the **winner's** favour.
+
+## Results
+
+"Clean" = run once on frozen code with new questions. "Practice" = re-scored after fixes informed by those
+same questions. Full detail in [evals/RESULTS.md](evals/RESULTS.md).
+
+| Test | Questions | Score | Kind |
+|---|---|---|---|
+| Fresh 40 from 8 sources, intent router | 25 of 40 run so far | **24** | clean (in progress) |
+| Fresh set B, 4 sources (rules router) | 20 | 16 | clean |
+| Fresh set A, 4 sources (rules router) | 20 | 16 | clean |
+| Forum/FAQ set, 4 sources (first attempt) | 20 | 11 | clean |
+| v3 benchmark | 50 | 29 first run; 36–38 now | clean, then practice |
+| Events suite (SQL gold by construction) | 20 | 20 | – |
+| Decisive momentum shift favours the winner | 1,218 matches | 99.7% (was 75.3%) | full audit |
+| Commentary retrieval, BM25 + frame filters | 96 test queries | hit@5 0.92 | held-out split |
+
+## Quick start (Windows, PowerShell)
+
+Needs a [cricbot](https://github.com/piyushdash94/cricbot) checkout with its `data/cricbot.duckdb` built,
+and a free Groq API key.
+
+```powershell
+copy .env.example .env      # set CRICBOT_ROOT and GROQ_API_KEY
+uv sync
+uv run pytest               # offline: fixture archive, fake embedder and LLM
+uv run cricrag build-index  # ~48k over chunks into LanceDB (embeddings cached)
+uv run cricrag build-events # ~34.5k events + momentum shifts in about a minute
+uv run cricrag ask "Where did the 2025 final turn?" --trace
+```
+
+Other commands: `cricrag frame "<question>"` (what the code extracted), `cricrag search`,
+`cricrag eval-pandit --suite v3|events`, `cricrag eval-routes --mode plan|full`, `cricrag eval-retrieval`.
+The scripts in `scripts/eval/` re-run the public-question tests above; `scripts/groq_quota.py` shows how much
+of Groq's daily quota is left.
+
+## Layout
+
+```
+src/cricrag/
+  frame.py, entities.py     question frame and entity linker
+  agent/intent.py           intent form, route table, shape check
+  agent/pandit.py           router and programs, writer, fallbacks
+  agent/validate.py         citation, number and name checks
+  agent/llm.py              Groq client: model fallback, disk cache, rate-limit waits
+  cricbot.py                cricbot's verified stats path, run in-process
+  events.py, momentum.py    events table; momentum detector (ported from cricbot)
+  story.py                  match facts sheet and shifts
+  finder.py                 guarded LLM-written SQL over documented views
+  index/, retrieval/        over-level chunks, LanceDB, BM25 / dense / hybrid
+  eval/                     v3, events, routing and retrieval evaluations
+evals/                      routing labels and results
+scripts/eval/               public-question test runs
+docs/                       pipeline image, original plan
+CLAUDE.md                   project rules (numbers from SQL only, never tune on held-out data, …)
+```
+
+## Limits
+
+- Groq's free tier allows 200k tokens per model per day; one full question costs 2–6k tokens, so long
+  evaluations run in batches.
+- The routing labels in `evals/` were drafted by an AI and are marked `verified: false` until a person checks them.
+- Commentary search rarely decides an answer; most answers come from SQL. Dense embeddings did not beat BM25
+  with filters on this data.
+
+## Data and licence
+
+Code: MIT. No data is included. Commentary comes from ESPNcricinfo through the unaffiliated `cricdata`
+package: keep it local and show only short, cited snippets. Cricsheet data requires attribution (ODC-By).

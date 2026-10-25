@@ -1,0 +1,15 @@
+# environments and secrets
+.venv/
+.env
+# caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+# data: archive, indexes, models, eval outputs (ESPN commentary must stay local)
+data/
+*.log
+*.duckdb
+# local scratch scripts
+scripts/scratch/
