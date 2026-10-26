@@ -13,7 +13,13 @@ archive (not the system's own queries); a source's stated answer is also noted w
 | Fresh set A | rules | ETV Bharat, Gulf News, Howstat, Wikipedia | 16/20 clean | 5-wicket hauls counted as 4+; runner-up count miscounted by the writer; fastest-century SQL; final margin mis-routed |
 | Fresh set B | rules | Scroll, Business Standard, CricTracker, WION | 16/20 clean | season ranking answered with players; per-team table for a total; chase mis-routed; partnership lookup bug |
 | Fresh 40, batch 1 | intent | Outlook, cricket.com, RCB, CricTracker | 19/20 clean | "most POTM awards in finals": cricbot dropped the finals filter |
-| Fresh 40, batch 2 | intent | Sportskeeda ×3, Scroll | 5/5 so far | – (15 to run when Groq quota allows) |
+| Fresh 40, batch 2 | intent | Sportskeeda ×3, Scroll | 19/20 clean (15 exact) | best death strike rate: finder ignored "minimum 10 innings" and counted run-outs |
+
+Fresh 40 in total: **38/40 right answer, 34/40 exact** (every number and name right); route 39/40, the one miss
+a labelling error. The four inexact answers: Wankhede highest chase (number right, teams not named); most death
+wickets since 2016 (Bumrah right, 97 vs 98); best death economy (Narine right, 7.48 vs 7.33 because byes were
+counted); most fours in a season (Warner 88 right, but tied with Sai Sudharsan 88, not mentioned). Batch 2 ran in
+three sittings because of Groq's daily cap; two answers came from the extractive fallback when the quota ran out.
 
 Every miss above was followed by a general fix (no per-question rules); later scores on those same questions
 are practice scores.

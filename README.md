@@ -38,7 +38,7 @@ same questions. Full detail in [evals/RESULTS.md](evals/RESULTS.md).
 
 | Test | Questions | Score | Kind |
 |---|---|---|---|
-| Fresh 40 from 8 sources, intent router | 25 of 40 run so far | **24** | clean (in progress) |
+| Fresh 40 from 8 sources, intent router | 40 | **38** (34 exact) | clean |
 | Fresh set B, 4 sources (rules router) | 20 | 16 | clean |
 | Fresh set A, 4 sources (rules router) | 20 | 16 | clean |
 | Forum/FAQ set, 4 sources (first attempt) | 20 | 11 | clean |
@@ -84,7 +84,7 @@ src/cricrag/
 evals/                      routing labels and results
 scripts/eval/               public-question test runs
 docs/                       pipeline image, original plan
-CLAUDE.md                   project rules (numbers from SQL only, never tune on held-out data, …)
+Rules.md                    project rules (numbers from SQL only, never tune on held-out data, …)
 ```
 
 ## Limits
