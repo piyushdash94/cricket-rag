@@ -61,6 +61,22 @@ uv run cricrag build-events # ~34.5k events + momentum shifts in about a minute
 uv run cricrag ask "Where did the 2025 final turn?" --trace
 ```
 
+### Without uv
+
+`requirements.txt` is exported from `uv.lock` (same pinned versions) and installs the `cricrag` command too.
+Python 3.11 or newer:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1        # macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+pip install pytest                 # for the tests
+cricrag ask "Where did the 2025 final turn?" --trace   # same commands, no "uv run" prefix
+```
+
+After changing dependencies in `pyproject.toml`, refresh it with
+`uv export --no-hashes --no-dev -o requirements.txt`. The UI's dependencies are in `frontend/ui/package.json`.
+
 ### Match centre UI
 
 Run it the way cricbot does: one backend terminal and one frontend terminal.
