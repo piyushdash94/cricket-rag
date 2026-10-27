@@ -78,6 +78,7 @@ def ask(
         "facts": facts,
         "summary": stats.summary(results, q),
         "gaps": gaps,
+        "blocks": [b for r in results for b in r["blocks"]],  # shown as tables under the reply (UI only)
         "tables": [  # result shape, for the intent router's fit check
             {
                 "title": b.get("title", ""),
@@ -120,3 +121,16 @@ def totals(block: dict[str, Any]) -> str:
     if sums.get("balls") and "runs" in sums:
         parts.append(f"strike rate {round(100 * sums['runs'] / sums['balls'], 2)}")
     return f"\nAll years combined (computed): {', '.join(parts)}." if parts else ""
+
+
+@lru_cache(maxsize=1)
+def archive_api(root: str):
+    """cricbot's archive, match-page and stats modules for `cricrag serve`: (ipl_data, cricsheet, stats router).
+
+    Loaded the same way as the stats path: no LangGraph service, no cricbot server process.
+    """
+    _mods(root)
+    from backend.apis.stats import router  # type: ignore[import-not-found]
+    from backend.src import cricsheet, ipl_data  # type: ignore[import-not-found]
+
+    return ipl_data, cricsheet, router

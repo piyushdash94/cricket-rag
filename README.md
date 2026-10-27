@@ -61,6 +61,21 @@ uv run cricrag build-events # ~34.5k events + momentum shifts in about a minute
 uv run cricrag ask "Where did the 2025 final turn?" --trace
 ```
 
+### Match centre UI
+
+Run it the way cricbot does: one backend terminal and one frontend terminal.
+
+```powershell
+uv run cricrag serve                         # backend on :8000: Pandit + cricbot's archive, match pages, stats
+cd frontend/ui; npm install; npm run dev     # frontend on :3000 (proxies /api to :8000)
+```
+
+The backend loads cricbot's archive and stats modules in-process from `CRICBOT_ROOT`, so the cricbot API
+does not need to be running. The UI is cricbot's match centre (archive rail, Pandit chat, match workspace,
+Stats, Docs, live trace) in a blue-and-white scorecard theme. Pandit's pipeline steps stream into the trace pane
+as they run; stats answers show the tables behind them; a match story opens that match beside the chat.
+In each match, Overview shows partnerships and Momentum compares powerplay, middle and death overs.
+
 Other commands: `cricrag frame "<question>"` (what the code extracted), `cricrag search`,
 `cricrag eval-pandit --suite v3|events`, `cricrag eval-routes --mode plan|full`, `cricrag eval-retrieval`.
 The scripts in `scripts/eval/` re-run the public-question tests above; `scripts/groq_quota.py` shows how much
@@ -79,11 +94,13 @@ src/cricrag/
   events.py, momentum.py    events table; momentum detector (ported from cricbot)
   story.py                  match facts sheet and shifts
   finder.py                 guarded LLM-written SQL over documented views
+  server.py                 the UI's API (`cricrag serve`): chat stream, pipeline graph, archive routes
   index/, retrieval/        over-level chunks, LanceDB, BM25 / dense / hybrid
   eval/                     v3, events, routing and retrieval evaluations
 evals/                      routing labels and results
 scripts/eval/               public-question test runs
 docs/                       pipeline image, original plan
+frontend/ui/                match centre UI (React, vinext), ported from cricbot
 Rules.md                    project rules (numbers from SQL only, never tune on held-out data, …)
 ```
 

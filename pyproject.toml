@@ -17,6 +17,10 @@ dependencies = [
   "pydantic-settings>=2.3",
   "typer>=0.12",
   "rich>=13",
+  "fastapi>=0.115",
+  "uvicorn>=0.34",
+  "cricdata>=0.3.2",        # cricbot's match pages: ESPN commentary and cross-check (optional at runtime)
+  "beautifulsoup4>=4.12",
 ]
 
 [dependency-groups]

@@ -23,6 +23,7 @@ CITE = re.compile(r"\[((?:[CSME]\d+)(?:\s*,\s*[CSME]\d+)*)\]")  # C: commentary,
 class Sources:
     chunks: dict[str, dict[str, Any]] = field(default_factory=dict)  # "C1" -> chunk row
     stats: dict[str, dict[str, Any]] = field(default_factory=dict)  # "S1"/"M1" -> stats result or story sheet
+    tables: list[dict[str, Any]] = field(default_factory=list)  # cricbot's result blocks, for display only
 
 
 def normalise(text: str) -> str:
