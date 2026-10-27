@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -104,6 +105,22 @@ WRITER = """You are Pandit, an IPL analyst. Answer the question using only the E
 - If the evidence does not answer the question, say exactly what is missing."""
 
 
+class Trace(list):
+    """The answer's trace. `on_step` sees each step as it is appended, so a server can stream it live."""
+
+    def __init__(self, steps: list[dict[str, Any]], on_step: Callable[[dict[str, Any]], None] | None = None):
+        super().__init__(steps)
+        self.on_step = on_step
+        if on_step:
+            for step in steps:
+                on_step(step)
+
+    def append(self, step: dict[str, Any]) -> None:
+        super().append(step)
+        if self.on_step:
+            self.on_step(step)
+
+
 @dataclass
 class Answer:
     text: str
@@ -135,10 +152,15 @@ class Pandit:
         self.find_con = None  # opened on first use
 
     # ------------------------------------------------------------------ routing
-    def ask(self, question: str, history: list[dict[str, str]] | None = None) -> Answer:
+    def ask(
+        self,
+        question: str,
+        history: list[dict[str, str]] | None = None,
+        on_step: Callable[[dict[str, Any]], None] | None = None,
+    ) -> Answer:
         t0 = time.time()
         frame = build_frame(question, self.cat, history)
-        src, trace = Sources(), [{"step": "frame", **frame.as_dict()}]
+        src, trace = Sources(), Trace([{"step": "frame", **frame.as_dict()}], on_step)
         if frame.ambiguous and not frame.players:
             token, cands = next(iter(frame.ambiguous.items()))
             return self._done(
@@ -460,6 +482,7 @@ class Pandit:
         st = cricbot.ask(str(self.root), question, history, self.planner)
         if st["kind"] == "stats":
             src.stats["S1"] = {"question": question, "reply": f"{st['summary']}\n{st['facts']}"}
+            src.tables = st.get("blocks", [])
         return st
 
     def _team_phase(self, frame, src: Sources) -> list[str]:

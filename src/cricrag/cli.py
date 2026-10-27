@@ -222,5 +222,13 @@ def eval_retrieval(
     console.print(f"[green]saved {out / f'retrieval_{stamp}.md'}")
 
 
+@app.command()
+def serve(host: str = "127.0.0.1", port: int = 8000, reload: bool = False):
+    """The UI's API (frontend/ui): Pandit plus cricbot's archive, match pages and stats, in one process."""
+    import uvicorn
+
+    uvicorn.run("cricrag.server:create_app", factory=True, host=host, port=port, reload=reload)
+
+
 if __name__ == "__main__":
     app()
