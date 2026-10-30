@@ -26,7 +26,13 @@ fastembed (ONNX), and Groq's free tier for the LLM.
 5. **Shape check.** A result keyed by the wrong unit ("which season…" answered with a list of players) or a
    writer that can't answer from it moves on to the next program.
 6. **Writer + validator.** One LLM call writes ≤5 cited sentences; the validator rejects uncited facts,
-   numbers not in the evidence and names not in the sources, then retries once or falls back to the evidence.
+   numbers not in the evidence and names not in the sources. Citation slips are fixed in code; anything else
+   gets one retry, then the evidence itself is shown. If the writer says the evidence misses the point, the
+   SQL finder gets one try before Pandit gives up.
+
+Planner slips seen in use are corrected in code before cricbot's queries run, each under a name in the trace:
+"highest economy" means the *worst* economy, "in each phase" is split by phase, "top 5" is not a chase
+target, and a one-over sample needs a stated minimum. Averages missing from a table are computed in code.
 
 Momentum shifts (collapses, scoring bursts, squeezes, chase swings, dropped catches) come from cricbot's
 detector; the decisive shift is always the strongest one in the **winner's** favour.
@@ -57,7 +63,7 @@ copy .env.example .env      # set CRICBOT_ROOT and GROQ_API_KEY
 uv sync
 uv run pytest               # offline: fixture archive, fake embedder and LLM
 uv run cricrag build-index  # ~48k over chunks into LanceDB (embeddings cached)
-uv run cricrag build-events # ~34.5k events + momentum shifts in about a minute
+uv run cricrag build-events # ~34.5k events + momentum shifts; set FIELDING_EVENTS for audited drops
 uv run cricrag ask "Where did the 2025 final turn?" --trace
 ```
 
@@ -90,7 +96,11 @@ The backend loads cricbot's archive and stats modules in-process from `CRICBOT_R
 does not need to be running. The UI is cricbot's match centre (archive rail, Pandit chat, match workspace,
 Stats, Docs, live trace) in a blue-and-white scorecard theme. Pandit's pipeline steps stream into the trace pane
 as they run; stats answers show the tables behind them; a match story opens that match beside the chat.
-In each match, Overview shows partnerships and Momentum compares powerplay, middle and death overs.
+In each match, Overview shows partnerships and the dropped catches (fielder, bowler, the batter's score then and
+the runs added afterwards), and Momentum compares powerplay, middle and death overs. The left rail shows
+all-time hall-of-fame lists; searching switches it to the season's matches, which also run across the top.
+Commentary comes from the local archive when ESPN's live feed is unavailable, and the turning point is the
+strongest shift in the winner's favour.
 
 Other commands: `cricrag frame "<question>"` (what the code extracted), `cricrag search`,
 `cricrag eval-pandit --suite v3|events`, `cricrag eval-routes --mode plan|full`, `cricrag eval-retrieval`.
@@ -111,6 +121,7 @@ src/cricrag/
   story.py                  match facts sheet and shifts
   finder.py                 guarded LLM-written SQL over documented views
   server.py                 the UI's API (`cricrag serve`): chat stream, pipeline graph, archive routes
+  matchpage.py              match page extras (local commentary, drops, shifts) and the hall of fame
   index/, retrieval/        over-level chunks, LanceDB, BM25 / dense / hybrid
   eval/                     v3, events, routing and retrieval evaluations
 evals/                      routing labels and results

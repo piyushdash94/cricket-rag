@@ -30,6 +30,9 @@ SECOND = re.compile(r"\b(chas(e|ed|ing)|second innings|2nd innings|run chase)\b"
 FIRST = re.compile(r"\b(batting first|batted first|first innings|1st innings|setting a target)\b", re.I)
 LAST_OVER = re.compile(r"\b(last|final) over\b", re.I)
 NTH_OVER = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th) over\b|\bover (\d{1,2})\b", re.I)
+# "this match" in a follow-up points at the match the previous answer named
+DEICTIC = re.compile(r"\b(this|that|the same) (match|game|innings|chase|final|collapse|contest)\b", re.I)
+TITLE = re.compile(r"\b(\d{1,2}(?:st|nd|rd|th) Match|Qualifier \d|Eliminator|Final)\b", re.I)
 
 
 @dataclass
@@ -45,6 +48,7 @@ class Frame:
     phase: str | None = None
     inning: int | None = None
     over: int | None = None  # 1-based over number, as stored in the archive
+    match_id: int | None = None  # set only when a follow-up's "this match" resolves to exactly one match
 
     def as_dict(self) -> dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v not in (None, [], {}, "")}
@@ -53,6 +57,8 @@ class Frame:
 def build_frame(question: str, cat: Catalog, history: list[dict[str, str]] | None = None) -> Frame:
     """Link the question; for a bare follow-up ("And in 2017?") carry entities from earlier user turns."""
     f = _link(question, cat)
+    if history and DEICTIC.search(question) and not f.teams and _previous_match(f, history, cat):
+        return f
     if history and not (f.players or f.teams):
         for turn in reversed(history):
             if turn.get("role") != "user":
@@ -65,6 +71,33 @@ def build_frame(question: str, cat: Catalog, history: list[dict[str, str]] | Non
             f.stage = f.stage or prev.stage
             break
     return f
+
+
+def _previous_match(f: Frame, history: list[dict[str, str]], cat: Catalog) -> bool:
+    """Resolve "this match" from the last answer: its season, both teams and the match title must name one match."""
+    said = next((t.get("content", "") for t in reversed(history) if t.get("role") == "assistant"), "")
+    prev, title = _link(said, cat), TITLE.search(said)
+    if not (said and prev.seasons and len(prev.teams) >= 2):
+        return False
+    sql = "select match_id from matches where season = ?"
+    params: list[Any] = [prev.seasons[0]]
+    for team in prev.teams[:2]:
+        alias = codes(team)
+        marks = ",".join("?" * len(alias))
+        sql += f" and (team1 in ({marks}) or team2 in ({marks}))"
+        params += alias + alias
+    if title:
+        sql += " and lower(title) = lower(?)"
+        params.append(title.group(1))
+    try:
+        with connect() as con:
+            found = [r[0] for r in con.execute(sql, params).fetchall()]
+    except Exception:
+        return False
+    if len(found) != 1:
+        return False
+    f.match_id, f.teams, f.years, f.seasons = int(found[0]), prev.teams[:2], prev.years[:1], prev.seasons[:1]
+    return True
 
 
 def _link(question: str, cat: Catalog) -> Frame:

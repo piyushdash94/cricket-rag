@@ -262,10 +262,14 @@ def result_of(ans, question: str, root: str | None) -> dict[str, Any]:
         cards.append(card)
     # A story or single-match answer opens that match beside the chat.
     m1 = ans.sources.stats.get("M1", {})
+    mid = None
     if ans.program in ("story", "match") and (found := MATCH_REF.search(m1.get("question", ""))):
-        slugs = match_slugs(int(found.group(1)), root)
-        if slugs:
-            actions.append({"type": "open_match", **slugs})
+        mid = int(found.group(1))
+    elif ans.program == "event":  # every cited event is in one match: open it, so "this match" follows
+        cited = {ans.sources.stats.get(t, {}).get("match_id") for t in re.findall(r"\[(E\d+)\]", ans.text)}
+        mid = cited.pop() if len(cited) == 1 else None
+    if mid and (slugs := match_slugs(int(mid), root)):
+        actions.append({"type": "open_match", **slugs})
     return {
         "reply": ans.text,
         "cards": cards,
@@ -304,6 +308,23 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     history: list[Turn] = Field(default_factory=list)
     ui_context: dict[str, Any] = Field(default_factory=dict)
+
+
+def enrich_match(detail: dict[str, Any], mid: int) -> dict[str, Any]:
+    """Local commentary, winner-aware shifts and dropped catches on top of cricbot's match page."""
+    import duckdb
+
+    from cricrag.archive import connect
+    from cricrag.matchpage import enrich
+
+    s = settings()
+    ev = duckdb.connect(str(s.events_db), read_only=True) if s.events_db.is_file() else None
+    try:
+        with connect() as con:
+            return enrich(detail, con, ev, mid)
+    finally:
+        if ev is not None:
+            ev.close()
 
 
 def archive(root: str):
@@ -526,7 +547,24 @@ def create_app(make_agent: Callable[[], Any] | None = None) -> FastAPI:
 
     @app.get("/api/ipl/matches/{series_slug}/{match_slug}")
     def match_detail(series_slug: str, match_slug: str):
-        return cricbot_archive()[0].get_match_detail(series_slug, match_slug)
+        detail = cricbot_archive()[0].get_match_detail(series_slug, match_slug)
+        if found := re.search(r"(\d+)$", match_slug):
+            with contextlib.suppress(Exception):  # cricbot's page still shows without the extras
+                enrich_match(detail, int(found.group(1)))
+        return detail
+
+    @app.get("/api/hall-of-fame")
+    def hall():
+        if "hall" not in state:
+            from cricrag.archive import connect
+            from cricrag.matchpage import hall_of_fame
+
+            try:
+                with connect() as con:
+                    state["hall"] = hall_of_fame(con)
+            except Exception as exc:
+                raise HTTPException(503, f"archive unavailable: {exc}") from exc
+        return state["hall"]
 
     @app.get("/api/docs/catalog")
     def catalog():

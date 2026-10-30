@@ -35,6 +35,11 @@ def test_guard_blocks_writes_and_missing_frame_values(catalog):
     assert (
         finder.guard("SELECT count(*) FROM events WHERE type='drop' AND team='RCB' AND year=2016", f) is None
     )
+    g = build_frame("Best death strike rate, minimum 10 innings", catalog)
+    assert "minimum 10" in finder.guard("SELECT batter FROM balls WHERE phase='death' GROUP BY 1", g)
+    assert (
+        finder.guard("SELECT batter FROM balls GROUP BY 1 HAVING count(DISTINCT match_id) >= 10", g) is None
+    )
 
 
 def test_leaderboard_counts_events(catalog, archive, tmp_path):
@@ -156,3 +161,17 @@ def test_decisive_shift_always_favours_the_winner():
     assert len(top) == 1 and top[0]["favours"] == "A"
     loser = [s for s in match_shifts(a + b, inn, winner="B") if s.get("decisive")]
     assert all(s["favours"] == "B" for s in loser)
+
+
+def test_citation_slips_are_repaired_without_an_llm_call():
+    from cricrag.agent.pandit import cap_rows, repair
+    from cricrag.agent.validate import Sources
+
+    src = Sources(stats={"S1": {"reply": "x"}})
+    assert repair("Bumrah took 20 wickets.", src) == "Bumrah took 20 wickets. [S1]"
+    assert repair("Bumrah took 20 [S2] wickets [S1].", src) == "Bumrah took 20  wickets [S1]."
+    two = Sources(stats={"S1": {}, "E1": {}})
+    assert repair("No tags here.", two) == "No tags here."
+    facts = "TABLE: t\na | b\n" + "\n".join(f"{i} | {i}" for i in range(20)) + "\nNOTE: n"
+    capped = cap_rows(facts, 12)
+    assert "11 | 11" in capped and "12 | 12" not in capped and capped.endswith("NOTE: n")

@@ -51,6 +51,12 @@ type Shift = {
   from: string; to: string; headline: string; favours: string; magnitude: number; score_before: string; score_after: string;
   decisive?: boolean; dismissed?: string[]; evidence?: { label: string; event: string; text: string }[];
 };
+type Drop = {
+  inning: number; over: string; fielder: string | null; batter: string; bowler: string;
+  score_then: number; final: number; added: number; balls_after: number; out: boolean;
+};
+type HallList = { title: string; group: string; unit: string; rows: { name: string; value: number | string }[] };
+type HallOfFame = { lists: HallList[]; span: string };
 type MatchDetail = {
   match: ArchiveMatch; innings: Innings[]; balls: Ball[];
   ball_coverage: { level: string; label: string; note: string };
@@ -63,6 +69,7 @@ type MatchDetail = {
   };
   consistency?: { status: string; note: string; checks: { innings: number; team: string; canonical: string; reference: string; match: boolean }[] };
   commentary_count?: number;
+  drops?: Drop[];
   sources: { name: string; provider: string; available: boolean }[];
 };
 type MatchTab = "overview" | "scorecard" | "balls" | "momentum";
@@ -215,6 +222,8 @@ export default function Home() {
   const [traceOpen, setTraceOpen] = useState(false);
   const [agent, setAgent] = useState<AgentStatus | null>(null);
   const [dataStatus, setDataStatus] = useState<DataStatus | null>(null);
+  const [hall, setHall] = useState<HallOfFame | null>(null);
+  const [railTab, setRailTab] = useState<"hall" | "matches">("hall");
   const [graph, setGraph] = useState<AgentGraph>(DEFAULT_GRAPH);
   const [trace, setTrace] = useState<TraceEvent[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -297,6 +306,17 @@ export default function Home() {
     void openMatch(found ?? placeholderMatch(seriesSlug, matchSlug, seasonFromSlug(seriesSlug, season)), pushHistory, tab);
   }, [matches, openMatch, season]);
 
+  // The rail shows the hall of fame; typing a search (or the mobile Matches tab) shows the match list.
+  useEffect(() => {
+    const timer = window.setTimeout(() => setRailTab(query.trim() ? "matches" : "hall"), 0);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+  useEffect(() => {
+    if (mobileView !== "matches") return;
+    const timer = window.setTimeout(() => setRailTab("matches"), 0);
+    return () => window.clearTimeout(timer);
+  }, [mobileView]);
+
   useEffect(() => {
     const timer = window.setTimeout(() => { setSearch(query.trim()); }, 280);
     return () => window.clearTimeout(timer);
@@ -335,8 +355,9 @@ export default function Home() {
 
   useEffect(() => {
     const get = (path: string) => fetch(`${API_BASE}${path}`).then((response) => response.ok ? response.json() : Promise.reject());
-    Promise.allSettled([get("/api/agent/status"), get("/api/agent/graph"), get("/api/docs/catalog"), get("/api/ipl/seasons"), get("/api/data/status")])
-      .then(([status, graphResult, docsResult, seasonResult, dataResult]) => {
+    Promise.allSettled([get("/api/agent/status"), get("/api/agent/graph"), get("/api/docs/catalog"), get("/api/ipl/seasons"), get("/api/data/status"), get("/api/hall-of-fame")])
+      .then(([status, graphResult, docsResult, seasonResult, dataResult, hallResult]) => {
+        if (hallResult.status === "fulfilled") setHall(hallResult.value);
         if (status.status === "fulfilled") setAgent(status.value);
         if (graphResult.status === "fulfilled") setGraph(graphResult.value);
         if (docsResult.status === "fulfilled") setDocs(docsResult.value);
@@ -480,7 +501,7 @@ export default function Home() {
         <span className="ticker-label"><b>IPL {season}</b><small>Results</small></span>
         <div className="ticker-track">
           {archiveLoading && Array.from({ length: 4 }).map((_, index) => <span className="ticker-card skeleton" key={index} />)}
-          {!archiveLoading && matches.slice(0, 12).map((match) => <button className={`ticker-card${selected?.id === match.id ? " selected" : ""}`} key={`t-${match.id}`} onClick={() => void openMatch(match)}>
+          {!archiveLoading && matches.map((match) => <button className={`ticker-card${selected?.id === match.id ? " selected" : ""}`} key={`t-${match.id}`} onClick={() => void openMatch(match)}>
             <small>{match.label && match.label !== "Match" ? match.label : "Result"} · {formatDate(match.date)}</small>
             {match.teams.map((team) => <span key={team.abbr}><i style={{ background: team.color }} /><strong>{team.abbr}</strong><b>{scoreLabel(team)}</b></span>)}
             <em>{match.status_text}</em>
@@ -497,6 +518,11 @@ export default function Home() {
           </select>
         </div>
         <label className="archive-search"><span>⌕</span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { setQuery(""); event.currentTarget.blur(); } }} placeholder="Search RCB, Chennai, Wankhede, final…" aria-label="Search historical IPL matches" />{query ? <button onClick={() => { setQuery(""); searchRef.current?.focus(); }} aria-label="Clear search">×</button> : <kbd title="Press / to search">/</kbd>}</label>
+        <div className="rail-tabs" role="tablist" aria-label="Sidebar">
+          <button role="tab" aria-selected={railTab === "hall"} className={railTab === "hall" ? "active" : ""} onClick={() => { setQuery(""); setRailTab("hall"); }}>Hall of fame</button>
+          <button role="tab" aria-selected={railTab === "matches"} className={railTab === "matches" ? "active" : ""} onClick={() => setRailTab("matches")}>IPL {season} matches</button>
+        </div>
+        {railTab === "hall" ? <HallOfFamePanel hall={hall} offline={Boolean(archiveError)} /> : <>
         <div className="rail-count"><strong>{archiveLoading ? "Searching…" : plural(total, "match", "es")}</strong><span>{archiveSource}</span></div>
         <div className="match-list" aria-live="polite">
           {archiveError && <div className="error-state"><strong>Archive unavailable</strong><p>{archiveError}</p><button onClick={() => void loadArchive(season, search)}>Try again</button></div>}
@@ -507,7 +533,7 @@ export default function Home() {
             {match.teams.map((team) => <span className="match-row-team" key={team.abbr}><i style={{ background: team.color }} /><strong>{team.abbr}</strong><b>{scoreLabel(team)}</b></span>)}
             <span className="match-row-result">{match.status_text}</span>
           </button>)}
-        </div>
+        </div></>}
         <footer className="data-status"><span className={`status-dot ${dataStatus?.cricsheet.synced ? "connected" : archiveError ? "offline" : ""}`} /><div><strong>{dataStatus ? dataStatus.canonical_source : "Checking data…"}</strong><small>{dataStatus?.cricsheet.synced ? `${dataStatus.cricsheet.matches} matches · ${dataStatus.cricsheet.seasons.at(-1)}–${dataStatus.cricsheet.seasons[0]}` : dataStatus ? `Run: ${dataStatus.cricsheet.sync_command}` : ""}</small></div></footer>
       </aside>
 
@@ -635,11 +661,47 @@ function buildMatchStory(detail: MatchDetail): { lines: StoryLine[]; moments: Ba
   }
   const decisive = analytics.shifts?.find((shift) => shift.decisive);
   if (decisive) lines.push({ kicker: "Turning point", text: `${SHIFT_LABELS[decisive.type]} in the ${decisive.innings_team} innings, overs ${decisive.from}–${decisive.to}: ${decisive.headline} (${decisive.score_before} → ${decisive.score_after}). It swung the game to ${decisive.favours}.` });
+  const costliest = [...(detail.drops ?? [])].sort((a, b) => b.added - a.added)[0];
+  if (costliest) lines.push({ kicker: "Costliest drop", text: dropText(costliest) });
   const stands = (detail.partnerships ?? []).flatMap((rows, index) => rows.map((row) => ({ ...row, team: innings[index]?.team })));
   const best = stands.sort((a, b) => b.runs - a.runs || a.balls - b.balls)[0];
   if (best && best.players.length) lines.push({ kicker: "Best stand", text: `${best.players.join(" and ")} added ${best.runs}${best.unbroken ? " unbroken" : ""} off ${best.balls} balls${best.team ? ` for ${best.team}` : ""}.` });
   const candidates = detail.balls.filter((ball) => ball.wicket || (ball.boundary && ball.event === "6"));
   return { lines, moments: spread(candidates.length ? candidates : detail.balls.filter((ball) => ball.boundary), 6) };
+}
+
+function dropText(drop: Drop) {
+  const who = drop.fielder ? `${drop.fielder} dropped ${drop.batter}` : `${drop.batter} was dropped`;
+  const after = drop.out ? `before falling for ${drop.final}` : `to finish on ${drop.final} not out`;
+  return `${who} on ${drop.score_then} at ${drop.over} off ${drop.bowler}'s bowling; ${drop.batter} added ${drop.added} more ${after}.`;
+}
+
+function DropsCard({ detail }: { detail: MatchDetail }) {
+  const drops = detail.drops ?? [];
+  if (!drops.length) return null;
+  const cost = drops.reduce((sum, drop) => sum + drop.added, 0);
+  return <article className="detail-card drops-card"><div className="card-title"><div><p className="section-kicker">DROPPED CATCHES</p><h3>What the misses cost</h3></div><span className="drop-total" title="Runs the dropped batters scored after their reprieve">+{cost} runs</span></div>
+    <ol className="drop-list">{drops.map((drop) => <li key={`${drop.inning}-${drop.over}`}>
+      <span className="drop-when"><b>{teamAbbr(detail, detail.innings.find((inning) => inning.number === drop.inning)?.team) ?? `Inns ${drop.inning}`} {drop.over}</b><small>{drop.fielder ?? "fielder not named"}</small></span>
+      <span className="drop-who"><strong>{drop.batter} <em>on {drop.score_then}</em></strong><small>off {drop.bowler}</small></span>
+      <span className="drop-cost"><b>+{drop.added}</b><small>{drop.final}{drop.out ? "" : "*"} · {plural(drop.balls_after, "ball")} more</small></span>
+    </li>)}</ol>
+    <p className="card-copy">Audited drops only (medium confidence or better). Runs are the batter’s own, from the delivery after the drop to the end of the innings.</p>
+  </article>;
+}
+
+function HallOfFamePanel({ hall, offline }: { hall: HallOfFame | null; offline: boolean }) {
+  const groups = useMemo(() => Array.from(new Set((hall?.lists ?? []).map((list) => list.group))), [hall]);
+  const [group, setGroup] = useState("batting");
+  if (!hall) return <div className="hall">{offline ? <div className="error-state"><strong>Archive unavailable</strong><p>Start the API to load the all-time lists.</p></div> : Array.from({ length: 3 }).map((_, index) => <div className="hall-list skeleton" key={index} />)}</div>;
+  return <div className="hall">
+    <div className="hall-head"><strong>All-time IPL</strong><span>{hall.span}</span></div>
+    <div className="hall-groups">{groups.map((name) => <button key={name} className={group === name ? "active" : ""} onClick={() => setGroup(name)}>{name}</button>)}</div>
+    <div className="hall-scroll">{hall.lists.filter((list) => list.group === group).map((list) => <section className="hall-list" key={list.title}>
+      <h4>{list.title}</h4>
+      <ol>{list.rows.map((row, index) => <li key={`${row.name}-${index}`}><span>{index + 1}</span><strong>{row.name}</strong><b>{row.value}{list.unit && index === 0 ? <small> {list.unit}</small> : null}</b></li>)}</ol>
+    </section>)}</div>
+  </div>;
 }
 
 function teamAbbr(detail: MatchDetail, name?: string) {
@@ -658,6 +720,7 @@ function Overview({ detail, onTab }: { detail: MatchDetail; onTab: (tab: MatchTa
       <ol className="story-lines">{lines.map((line) => <li key={line.kicker}><span>{line.kicker}</span><p>{line.text}</p></li>)}</ol>
       {moments.length > 0 && <div className="key-moments"><p className="section-kicker">KEY MOMENTS</p>{moments.map((ball) => <div className={`moment${ball.wicket ? " wicket" : " boundary"}`} key={ball.id}><b>{inningsTag(detail, ball)} {ball.label}</b><em>{ball.event}</em><span><strong>{ball.title}</strong><RichText text={ball.commentary || ball.text} /></span></div>)}<button className="wide-action" onClick={() => onTab("balls")}>Full delivery timeline →</button></div>}
     </article>
+    <DropsCard detail={detail} />
     {(detail.partnerships?.length ?? 0) > 0 && <article className="detail-card story-card"><div className="card-title"><div><p className="section-kicker">PARTNERSHIPS</p><h3>How each innings was built</h3></div></div>
       <PartnershipChart innings={detail.innings.map((inning, index) => ({ team: inning.team, color: teamColor(detail, inning.team), rows: detail.partnerships?.[index] ?? [] }))} />
     </article>}

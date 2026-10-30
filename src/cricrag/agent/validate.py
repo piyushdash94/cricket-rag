@@ -35,7 +35,8 @@ def normalise(text: str) -> str:
         .replace("\u00a0", " ")
         .replace("\u2011", "-")
     )
-    return re.sub(r"\[\s*([CSME]\d+)(?:†[^\]]*)?\s*\]", r"[\1]", text)
+    text = re.sub(r"\s*\[(DECISIVE|VERIFIED ANSWER)\]|^(DECISIVE( SHIFT)?|VERIFIED ANSWER):\s*", "", text)  # copied labels
+    return re.sub(r"\[\s*[?*#]?\s*([CSME]\d+)(?:†[^\]]*)?\s*\]", r"[\1]", text)  # also [?S1]
 
 
 def cited(answer: str) -> list[str]:
@@ -51,7 +52,7 @@ def allowed_numbers(src: Sources, question: str, refs: list[str]) -> set[str]:
                 numbers(c["header"]) | numbers(c.get("ball_labels", "")) | {str(c["over"]), str(c["inning"])}
             )
         elif r in src.stats:
-            ok |= numbers(str(src.stats[r]))
+            ok |= numbers(str({k: v for k, v in src.stats[r].items() if k != "match_id"}))
     return ok
 
 

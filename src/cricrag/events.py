@@ -121,12 +121,13 @@ SQL = {
         FROM b WHERE inning = 2 QUALIFY row_number() OVER (PARTITION BY match_id ORDER BY sequence DESC) = 1""",
 }
 FIELDING = f"""SELECT f.label, {", ".join("b." + c for c in _C)}, f.fielder, f.batter, f.fielder,
-    f.confidence, try_cast(f.runs_after_drop AS DOUBLE), NULL,
-    b.cr || '/' || b.cw, NULL, NULL, false, b.match_id || ':' || b.inning || ':' || b.over_number
+    f.confidence, try_cast(f.runs_after_drop AS DOUBLE), b.br,
+    b.cr || '/' || b.cw, NULL, b.bowler, false, b.match_id || ':' || b.inning || ':' || b.over_number
     FROM read_csv('{{path}}', all_varchar = true, header = true) f
     JOIN b ON b.match_id = f.match_id::BIGINT AND b.inning = f.inning::INT AND b.over_label = f.over_label
     WHERE f.label IN ('drop', 'misfield', 'overthrow') AND f.confidence NOT IN ('low', 'very_low')
-    QUALIFY row_number() OVER (PARTITION BY b.match_id, b.inning, f.over_label, f.label ORDER BY b.sequence) = 1"""
+    QUALIFY row_number() OVER (PARTITION BY b.match_id, b.inning, f.over_label, f.label
+                               ORDER BY coalesce(b.is_legal, true) DESC, b.sequence) = 1  -- the legal ball, not a wide"""
 
 
 def build(archive: Path, out: Path, fielding_csv: Path | None = None, log=print) -> int:
@@ -258,6 +259,8 @@ TYPE_CUES: list[tuple[str, re.Pattern]] = [
             re.I,
         ),
     ),
+    # a collapse is one kind of shift (wickets in a cluster); ranked by the detector's swing
+    ("collapse", re.compile(r"\b(collaps\w*|lost wickets in a heap|wickets? in a heap|procession)\b", re.I)),
     ("shift", re.compile(r"\b(turn(ed|ing)?( point)?|momentum|collapse\w*|comeback|swing)\b", re.I)),
     (
         "wicket",
@@ -289,7 +292,10 @@ def team_role(question: str) -> str | None:
 
 def query(con, frame: Frame, types: list[str], limit: int = 8) -> tuple[list[dict[str, Any]], int]:
     """Events matching the frame (code-extracted filters only). Returns (rows, total matching)."""
-    where, params = [f"type IN ({','.join('?' * len(types))})"], list(types)
+    plain = [t for t in types if t != "collapse"]
+    where, params = [f"type IN ({','.join('?' * len(plain))})" if plain else "false"], list(plain)
+    if "collapse" in types:
+        where[0] = f"({where[0]} OR (type = 'shift' AND detail = 'wicket_cluster'))"
     for col, vals in (("season", frame.seasons),):
         if vals:
             where.append(f"{col} IN ({','.join('?' * len(vals))})")
@@ -362,7 +368,9 @@ def describe_row(r: dict[str, Any], short: bool = False) -> str:
             if t == "drop" and r["value"] is not None
             else ""
         )
-        return f"{at}: {t} by {r['player'] or 'an unnamed fielder'} ({r['player2']} batting, confidence {r['detail']}){extra}."
+        off = f" off {r['note']}'s bowling" if t == "drop" and r["note"] else ""
+        on = f" on {int(r['value2'])}" if t == "drop" and r["value2"] is not None else ""
+        return f"{at}: {t} by {r['player'] or 'an unnamed fielder'}{off} ({r['player2']} batting{on}, confidence {r['detail']}){extra}."
     if t == "finish":
         return f"{at}: {r['detail']}; final score {r['score']}{' (close finish)' if r['close'] else ''}."
     return f"{at}: {(r['note'] or '').split(' | ')[0] if short else r['note']}"

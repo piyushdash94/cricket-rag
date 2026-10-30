@@ -85,3 +85,44 @@ def test_route_eval_scores_the_first_route(catalog, tmp_path):
     rows = rt.run(p, rt.load(lab, None), "plan")
     assert rows[0]["ok"] and rows[0]["form_match"]["answer"] and not rows[0]["form_match"]["measure"]
     assert "ALL | 1/1" in rt.report(rows)
+
+
+def test_planner_slips_fixed_in_code():
+    from cricrag.cricbot import adjust_calls, averages
+
+    worst = adjust_calls(
+        "highest economy for spinners at the death in 2026",
+        [{"name": "slice_stats", "args": {"metric": "economy", "order": "best", "phase": "death"}}],
+        {"economy"},
+    )
+    assert worst[0]["args"]["order"] == "worst"
+    top5 = adjust_calls(
+        "highest spinner economy at the death, show top 5",
+        [{"name": "slice_stats", "args": {"metric": "economy", "target_max": 5, "min_balls": 1}}],
+        {"economy"},
+    )
+    assert "target_max" not in top5[0]["args"] and "min_balls" not in top5[0]["args"]
+    best = adjust_calls(
+        "best economy at the death",
+        [{"name": "slice_stats", "args": {"metric": "economy", "order": "best"}}],
+        {"economy"},
+    )
+    assert best[0]["args"]["order"] == "best"
+    split = adjust_calls(
+        "Kohli against spin in each phase after 2019",
+        [{"name": "slice_stats", "args": {"metric": "average", "phase": "powerplay", "bowl_kind": "spin"}}],
+        set(),
+    )
+    assert split[0]["args"]["split"] == "phase" and "phase" not in split[0]["args"]
+    fan = adjust_calls(
+        "strike rate by bowling type in every phase",
+        [{"name": "slice_stats", "args": {"metric": "strike_rate", "split": "bowl_kind"}}],
+        set(),
+    )
+    assert [c["args"]["phase"] for c in fan] == ["powerplay", "middle", "death"]
+    line = averages({"type": "table", "columns": ["Phase", "R", "B", "Out"], "rows": [["death", 97, 50, 2]]})
+    assert "death: average 48.5" in line
+    assert (
+        averages({"type": "table", "columns": ["phase", "runs", "outs", "average"], "rows": [["x", 1, 1, 1]]})
+        == ""
+    )

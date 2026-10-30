@@ -144,3 +144,30 @@ def test_superlative_event_questions_route_to_events(edb, retriever, catalog, mo
     monkeypatch.setattr("cricrag.agent.pandit.find_matches", lambda f: [])
     a = Pandit(retriever, catalog, NoLLM(), edb).ask("Biggest finish of 2025?")
     assert a.program == "event"
+
+
+def test_collapse_means_a_wicket_cluster_and_follow_ups_find_the_match(catalog, archive, monkeypatch):
+    from cricrag.config import settings
+    from cricrag.frame import build_frame
+
+    assert "collapse" in ev.event_types("which match had the biggest batting collapse in 2026?")
+    monkeypatch.setenv("CRICBOT_DB", str(archive))
+    settings.cache_clear()
+    hist = [
+        {"role": "user", "content": "where did the 2025 final turn?"},
+        {
+            "role": "assistant",
+            "content": "In IPL 2025 Final (RCB v PBKS), Krunal Pandya's spell turned it [E1].",
+        },
+    ]
+    f = build_frame("give me some commentary snippets from this match", catalog, hist)
+    assert f.match_id == 1473511 and set(f.teams) == {"RCB", "PBKS"}
+    assert build_frame("give me commentary from this match", catalog, hist[:1]).match_id is None
+    settings.cache_clear()
+
+
+def test_collapse_query_filters_wicket_clusters(edb, catalog):
+    from cricrag.frame import build_frame
+
+    rows, _ = ev.query(edb, build_frame("biggest collapse in 2025", catalog), ["collapse"])
+    assert all(r["type"] == "shift" and r["detail"] == "wicket_cluster" for r in rows)

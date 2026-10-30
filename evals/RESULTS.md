@@ -24,6 +24,33 @@ three sittings because of Groq's daily cap; two answers came from the extractive
 Every miss above was followed by a general fix (no per-question rules); later scores on those same questions
 are practice scores.
 
+## 30 Oct: nine questions from the UI, then a regression rerun
+
+Nine questions asked in the match centre (two of them follow-ups) were checked against SQL. Four were right.
+The five misses had five different causes. Each got a general fix (no rules written for one question):
+
+| Question | Before | Cause | After |
+|---|---|---|---|
+| Biggest batting collapse, 2026 | GT all out 100 (wrong) | "collapse" didn't filter to wicket clusters | DC 6 for 8 v RCB |
+| "Commentary snippets from this match" | snippets from five other matches | follow-up lost the match | resolved from the last answer; that match opens beside the chat |
+| Kohli's death-overs average, 2024 | "average not in the evidence" | table had runs and outs, no average | 48.5, computed in code |
+| Fewest balls to 100 sixes | Gayle, "866.53 balls per 100" (a rate) | finder used a rate; writer's abstention ended the run | Russell, 657 balls (running total) |
+| Highest spinner death economy, 2026 | the *best* economies | planner sent order=best; "top 5" sent as a chase target | Kuldeep 12.83 … Dubey 8.40 |
+| Kohli vs spin in each phase since 2020 | powerplay only | one phase planned for "each phase" | 63.2 / 57.94 / 25.67 |
+
+Kohli's middle-overs figure is 57.94 when run outs count as dismissals (cricbot) and 61.6 when only the bowler's
+wickets count; both are standard, so the answer is right under cricbot's stated definition.
+
+Rerun of fresh 40, batch 2 (same 20 questions, no LLM cache, after all fixes): **20/20 right, 17 exact**
+(was 19/20 and 15). Death strike rate now honours "minimum 10 innings"; death economy now excludes byes
+(7.33, was 7.48). Still inexact: highest Wankhede chase (teams not named), Bumrah 97 death wickets since 2016
+(98), most fours in a season (the tie with Warner not mentioned). This is a practice score: these questions
+had been seen.
+
+Tokens on that batch: 57.1k vs 56.8k on 25 Oct (+0.5%). Fixing citation slips in code saved a retry where it
+fired (one question), and long tables are capped at 12 rows for the writer, but route changes between runs
+(one question moved to the finder, another away from it) outweigh both. No token saving is claimed.
+
 ## Benchmarks
 
 | Suite | Score | Notes |

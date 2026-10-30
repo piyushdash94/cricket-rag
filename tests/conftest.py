@@ -170,6 +170,10 @@ def make_archive(path) -> None:
         ("is_legal", "true"),
         ("bowler_wicket", "is_wicket"),
         ("player_out_id", "case when is_wicket then 101 end"),
+        ("bye_runs", "0"),
+        ("legbye_runs", "0"),
+        ("batter_id", "hash(batter) % 100000"),
+        ("bowler_id", "hash(bowler) % 100000"),
     ):
         con.execute(
             f"alter table balls add column {col} {'boolean' if col.startswith(('is_', 'bowler')) else 'bigint'}"

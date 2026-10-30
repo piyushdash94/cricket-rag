@@ -113,7 +113,9 @@ def _overs(event: dict[str, Any], cap: int = 2) -> list[int]:
 
 def match_story(con, mid: int, drops: dict | None = None, limit: int = 6) -> dict[str, Any]:
     balls, innings = match_balls(con, mid, drops)
-    shifts = match_shifts(balls, innings, limit=limit) if len(innings) == 2 else []
+    won = _rows(con, "select winner from matches where match_id=?", mid)
+    winner = canon(won[0][0]) if won and won[0][0] else None  # the decisive shift favours the winner
+    shifts = match_shifts(balls, innings, limit=limit, winner=winner) if len(innings) == 2 else []
     return {
         "match_id": mid,
         "facts": facts(con, mid),

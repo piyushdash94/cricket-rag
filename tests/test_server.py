@@ -12,9 +12,10 @@ from test_events_and_pandit import NoLLM, edb, retriever  # noqa: F401  (fixture
 
 
 @pytest.fixture
-def client(edb, retriever, catalog, archive, monkeypatch):  # noqa: F811
+def client(edb, retriever, catalog, archive, monkeypatch, tmp_path):  # noqa: F811
     from cricrag.config import settings
 
+    monkeypatch.chdir(tmp_path)  # no ./.env: a developer's CRICBOT_ROOT must not leak into these tests
     monkeypatch.setenv("CRICBOT_DB", str(archive))
     monkeypatch.delenv("CRICBOT_ROOT", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
@@ -88,3 +89,43 @@ def test_archive_routes_explain_a_missing_checkout(client):
     assert client.get("/api/agent/status").json()["provider"] is None
     assert next(n["id"] for n in client.get("/api/agent/graph").json()["nodes"]) == "frame"
     assert client.get("/api/docs/catalog").json()["nodes"]
+
+
+def test_match_page_extras_come_from_the_archive(archive, tmp_path):
+    import duckdb
+
+    from cricrag import matchpage
+
+    ev = duckdb.connect(str(tmp_path / "e.duckdb"))
+    ev.execute(
+        "create table events as select 'drop' type, 1254071::bigint match_id, 1 inning, 1 \"over\", '0.6' label, "
+        "'Rashid Khan' player, 'Mayank Agarwal' player2, 'high' detail"
+    )
+    con = duckdb.connect(str(archive), read_only=True)
+    balls = [{"inning": 1, "label": "0.6"}, {"inning": 2, "label": "19.3"}]
+    detail = {
+        "balls": balls,
+        "commentary_count": 0,
+        "sources": [{"name": "Commentary", "available": False}],
+        "analytics": {"shifts": ["cricbot's"]},
+    }
+    matchpage.enrich(detail, con, ev, 1254071)
+    assert detail["commentary_count"] == 2 and "dropped at deep midwicket" in balls[0]["commentary"]
+    assert detail["sources"][0]["available"] is True
+    (d,) = detail["drops"]
+    assert (d["fielder"], d["batter"], d["bowler"]) == ("Rashid Khan", "Mayank Agarwal", "Abhishek Sharma")
+    assert (d["score_then"], d["added"], d["out"]) == (2, 0, False)
+    assert detail["analytics"]["shifts"] != ["cricbot's"]
+
+
+def test_hall_of_fame_lists(archive):
+    import duckdb
+
+    from cricrag.matchpage import hall_of_fame
+
+    con = duckdb.connect(str(archive), read_only=True)
+    hof = hall_of_fame(con)
+    runs = next(x for x in hof["lists"] if x["title"] == "Most runs")
+    assert runs["rows"][0] == {"name": "Shashank Singh", "value": 6}
+    titles = next(x for x in hof["lists"] if x["title"] == "Most titles")
+    assert titles["rows"] == [{"name": "RCB", "value": 1}]

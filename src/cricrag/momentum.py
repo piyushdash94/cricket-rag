@@ -298,7 +298,7 @@ def describe(event: dict[str, Any]) -> str:
     if event.get("dismissed"):
         line += f"; out: {', '.join(name for name in event['dismissed'] if name)}"
     if event.get("decisive"):
-        line += " [largest shift]"
+        line += " (decisive: the strongest swing toward the winner)"
     for item in event.get("evidence", [])[:2]:
         if item.get("text"):
             line += f" | {item['label']} {item['event']}: {item['text'][:140]}"

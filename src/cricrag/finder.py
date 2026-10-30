@@ -48,7 +48,7 @@ matches(match): match_id, season, year INT, start_date, venue, team1, team2, win
 innings(team innings, super overs excluded): match_id, season, year, stage, inning (1 or 2), team, opponent, runs, wickets, balls, extras, won BOOL
 batting(batter innings): match_id, season, year, stage, inning, team, opponent, position, player, runs, balls, fours, sixes, is_out BOOL, dismissal
 bowling(bowler innings): match_id, season, year, stage, inning, team (bowling side), opponent, player, balls, conceded, wickets, dots, wides, noballs
-balls(delivery): match_id, year, stage, inning, over_number (1-20), ball_in_over, sequence, bat (batting team), bowl (bowling team), phase ('powerplay' overs 1-6|'middle' 7-15|'death' 16-20), batter, non_striker, bowler, runs_total, runs_bat, extras, wide_runs, noball_runs, is_legal, is_wide, is_noball, is_four, is_six, is_wicket, bowler_wicket, dismissal_type, player_out
+balls(delivery): match_id, year, stage, inning, over_number (1-20), ball_in_over, sequence, bat (batting team), bowl (bowling team), phase ('powerplay' overs 1-6|'middle' 7-15|'death' 16-20), batter, non_striker, bowler, runs_total, runs_bat, extras, wide_runs, noball_runs, charged (runs charged to the bowler: no byes/leg byes), is_legal, is_wide, is_noball, is_four, is_six, is_wicket, bowler_wicket, dismissal_type, player_out
 events(notable moments): type ('wicket','fifty','hundred','partnership','haul','hattrick','maiden','big_over','drop','misfield','overthrow','finish','shift'), match_id, season, year, stage, inning, over, batting_team, bowling_team, phase, player, player2, fielder, detail, value"""
 
 PROMPT = """Write ONE DuckDB SELECT that answers the question from these views only.
@@ -62,6 +62,11 @@ Rules (data conventions):
 - Fastest fifty/hundred = fewest balls to REACH it: running sum of runs_bat and non-wide balls per
   (match_id, inning, batter) in balls; the batting row's balls is the whole innings, not balls to the milestone.
   Balls faced exclude wides only (a no-ball counts as a ball faced).
+- Career milestones ("fewest balls/innings to N runs/sixes/wickets"): a running total per player over the whole
+  career in time order (join matches for start_date; then inning, sequence); the answer is the balls/innings count at
+  the first row where the running total reaches N. Never answer with a rate or N/rate.
+- Bowler wickets = bowler_wicket (run outs are not the bowler's); runs conceded = charged (byes and leg byes excluded).
+- "minimum N", "at least N", "min N" in the question is a HAVING filter on the count it names.
 - Strike rate = 100*runs/balls, economy = 6*conceded/balls, average = runs/dismissals.
 - Join balls or events to innings on (match_id, inning) to get the batting side's result (won).
 - Rankings: ORDER BY the measure, LIMIT 10, return the name plus the measure (and counts it depends on).
@@ -75,6 +80,9 @@ BAN = re.compile(
 )
 
 
+MIN_N = re.compile(r"\b(?:minimum(?: of)?|at least|min\.?)\s+(\d+)\b", re.I)
+
+
 def guard(sql: str, frame: Frame) -> str | None:
     """Return a problem, or None if the SQL may run."""
     s = sql.strip().rstrip(";")
@@ -86,6 +94,7 @@ def guard(sql: str, frame: Frame) -> str | None:
     miss = [p for p in frame.players if p.split()[-1].lower() not in low]
     miss += [t for t in frame.teams if t.lower() not in low]
     miss += [str(y) for y in frame.years if str(y) not in s]
+    miss += [f"minimum {n}" for n in MIN_N.findall(frame.question) if not re.search(rf"\b{n}\b", s)]
     return f"the query must filter on {', '.join(miss)}" if miss else None
 
 

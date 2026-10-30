@@ -73,6 +73,40 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 .match-row-result { color:var(--muted); font-size:12px; }
 .match-row.skeleton { height:92px; background:linear-gradient(100deg,var(--canvas) 30%,var(--panel2) 50%,var(--canvas) 70%); background-size:240% 100%; animation:shimmer 1.1s infinite; }
 @keyframes shimmer { to { background-position:-240% 0; } }
+/* rail: hall of fame (default) or the season's match list */
+.rail-tabs { display:grid; grid-template-columns:1fr 1fr; gap:2px; padding:2px; border-radius:9px; background:var(--panel2); }
+.rail-tabs button { height:30px; border:0; border-radius:7px; background:none; color:var(--muted); font-size:12px; font-weight:600; }
+.rail-tabs button.active { background:var(--panel); color:var(--ink); box-shadow:var(--shadow); }
+.hall { min-height:0; flex:1; display:flex; flex-direction:column; gap:10px; }
+.hall-head { display:flex; justify-content:space-between; align-items:baseline; }
+.hall-head strong { font-size:13px; }
+.hall-head span { color:var(--faint); font:600 11px var(--font-geist-mono); }
+.hall-groups { display:flex; flex-wrap:wrap; gap:6px; }
+.hall-groups button { padding:4px 10px; border:1px solid var(--line2); border-radius:999px; background:none; color:var(--muted); font-size:12px; text-transform:capitalize; }
+.hall-groups button.active { border-color:var(--accent); background:color-mix(in srgb,var(--accent) 10%,var(--panel)); color:var(--accent); font-weight:600; }
+.hall-scroll { min-height:0; flex:1; overflow-y:auto; display:grid; align-content:start; gap:10px; margin:0 -4px; padding:0 4px; scrollbar-width:thin; }
+.hall-list { padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:var(--canvas); }
+.hall-list.skeleton { height:150px; background:linear-gradient(100deg,var(--canvas) 30%,var(--panel2) 50%,var(--canvas) 70%); background-size:240% 100%; animation:shimmer 1.1s infinite; }
+.hall-list h4 { margin:0 0 6px; color:var(--muted); font-size:11px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; }
+.hall-list ol { margin:0; padding:0; list-style:none; display:grid; gap:2px; }
+.hall-list li { display:grid; grid-template-columns:18px 1fr auto; align-items:baseline; gap:8px; padding:3px 0; font-size:13px; }
+.hall-list li>span { color:var(--faint); font:600 11px var(--font-geist-mono); }
+.hall-list li strong { min-width:0; overflow:hidden; font-weight:500; text-overflow:ellipsis; white-space:nowrap; }
+.hall-list li b { font:600 13px var(--font-geist-mono); }
+.hall-list li b small { color:var(--faint); font:500 11px var(--font-geist-sans, inherit); }
+.hall-list li:first-child strong { font-weight:700; }
+.hall-list li:first-child b { color:var(--accent); }
+/* match page: dropped catches */
+.drop-total { padding:3px 9px; border-radius:999px; background:color-mix(in srgb,var(--red) 12%,var(--panel)); color:var(--red); font:700 12px var(--font-geist-mono); white-space:nowrap; }
+.drop-list { margin:0; padding:0; list-style:none; display:grid; gap:8px; }
+.drop-list li { display:grid; grid-template-columns:minmax(90px,auto) 1fr auto; align-items:center; gap:12px; padding:9px 11px; border:1px solid var(--line); border-radius:9px; background:var(--panel2); }
+.drop-list small { display:block; color:var(--muted); font-size:11px; }
+.drop-when b { font:700 12px var(--font-geist-mono); }
+.drop-who strong { font-size:13px; }
+.drop-who em { color:var(--muted); font-style:normal; font-weight:500; }
+.drop-cost { text-align:right; }
+.drop-cost b { color:var(--red); font:700 15px var(--font-geist-mono); }
+@media (max-width:520px) { .drop-list li { grid-template-columns:1fr auto; } .drop-when { grid-column:1/-1; } }
 .data-status { display:flex; align-items:center; gap:9px; padding-top:10px; border-top:1px solid var(--line); }
 .data-status strong,.data-status small { display:block; }
 .data-status strong { font-size:12px; }

@@ -24,7 +24,7 @@ from typing import Any
 from cricrag import events as ev
 from cricrag.agent import intent as itn
 from cricrag.agent.llm import GroqClient, LLMUnavailable
-from cricrag.agent.validate import Sources, check, normalise
+from cricrag.agent.validate import Sources, check, cited, normalise
 from cricrag.entities import Catalog, link_players
 from cricrag.frame import build_frame, find_matches
 from cricrag.retrieval.hybrid import Filters, Retriever
@@ -99,7 +99,7 @@ WRITER = """You are Pandit, an IPL analyst. Answer the question using only the E
 - Lead with the direct answer. Name the players involved. At most 5 sentences, plain prose.
 - End every sentence that states a fact with the evidence tag(s) exactly as written, e.g. [E1] or [S1][C2].
 - Use only the numbers shown; never add up, average or derive new ones.
-- For "where did it turn" questions, lead with the line marked DECISIVE and who caused it.
+- For "where did it turn" questions, lead with the line that starts "DECISIVE SHIFT:" and who caused it (don't copy the label).
 - Numbers: only from E, S or M lines, or C headers. Never from commentary BODY text.
 - A VERIFIED ANSWER line is correct: restate its names and numbers first, then add detail only if asked.
 - If the evidence does not answer the question, say exactly what is missing."""
@@ -196,6 +196,9 @@ class Pandit:
                 mode="gap",
             )
         matches = find_matches(frame) if (frame.seasons or frame.teams or frame.stage) else []
+        if frame.match_id:  # "this match" in a follow-up, resolved from the previous answer
+            matches = [m for m in matches if m["match_id"] == frame.match_id] or matches
+            trace.append({"step": "route", "rule": "follow_up_match", "match": frame.match_id})
         one = matches[0]["match_id"] if frame.stage == "final" and len(matches) == 1 else None
         if (
             one and RESULT.search(question) and not STORY.search(question) and not ev.event_types(question)
@@ -322,7 +325,7 @@ class Pandit:
         one = matches[0]["match_id"] if len(matches) == 1 else None
         order = itn.routes(it, bool(one), frame)
         trace.append({"step": "intent", **it.as_dict(), "routes": order})
-        prior, gap_reply = None, None
+        prior, gap_reply, missed = None, None, False
         for prog in order:
             src = Sources()
             if prog == "finder":
@@ -341,9 +344,13 @@ class Pandit:
             if not (abstained or (ans.mode == "extractive" and ans.problems)):
                 return ans
             prior = prior or ans
+            missed = missed or bool(abstained)
             trace.append(
                 {"step": "fallback", "rule": "writer_abstained" if abstained else "writer_failed_checks"}
             )
+        if missed and "finder" not in order:  # the evidence missed the point: one guarded query before giving up
+            trace.append({"step": "fallback", "rule": "abstained_to_finder"})
+            return self._find(question, frame, Sources(), trace, t0, gap_reply, prior, hint=it.as_dict())
         return prior or self._done(gap_reply or GAP, "gap", frame, Sources(), trace, t0, mode="gap")
 
     def _program(self, prog, question, history, frame, it, one, src, trace):
@@ -399,7 +406,14 @@ class Pandit:
             question, st["summary"], bool(link_players(st["summary"], self.cat).players)
         )
         note.update(calls=st.get("calls"), mismatch=why)
-        return None if why else [f"VERIFIED ANSWER: {st['summary']} [S1]", f"{st['facts']} [S1]"]
+        return (
+            None
+            if why
+            else [
+                f"VERIFIED ANSWER: {st['summary']} [S1]",
+                f"{cap_rows(st['facts'], max(12, int(n.group(1)) if (n := TOP_N.search(question)) else 12))} [S1]",
+            ]
+        )
 
     # ------------------------------------------------------------------ programs
     def _first_match(self, frame) -> int | None:
@@ -451,7 +465,7 @@ class Pandit:
         ]
         for i, row in enumerate(rows, 1):
             tag = f"E{i}"
-            src.stats[tag] = {"question": "event", "reply": ev.describe_row(row)}
+            src.stats[tag] = {"question": "event", "reply": ev.describe_row(row), "match_id": row["match_id"]}
             lines.append(f"{src.stats[tag]['reply']} [{tag}]")
         lines += self._colour([r["chunk_id"] for r in rows[:4]], [r["label"] for r in rows[:4]], src)
         return [x for x in lines if x] if rows else []
@@ -471,7 +485,7 @@ class Pandit:
         for i, row in enumerate(rows[:8], 1):
             src.stats[f"E{i}"] = {"question": "event", "reply": ev.describe_row(row, short=True)}
             lines.append(
-                f"{'DECISIVE ' if row['type'] == 'shift' and row['close'] else ''}{src.stats[f'E{i}']['reply']} [E{i}]"
+                f"{'DECISIVE SHIFT: ' if row['type'] == 'shift' and row['close'] else ''}{src.stats[f'E{i}']['reply']} [E{i}]"
             )
         key = [r for r in rows if r["type"] == "shift"][:3]
         return lines + self._colour([r["chunk_id"] for r in key], [r["label"] for r in key], src)
@@ -519,7 +533,7 @@ class Pandit:
         return [f"{src.stats['S1']['reply']} [S1]"]
 
     def _search(self, frame, src: Sources) -> list[str]:
-        f = Filters.from_frame(frame)
+        f = Filters.from_frame(frame, [frame.match_id] if frame.match_id else None)
         f.role = ev.team_role(frame.question)
         res = self.r.search(frame.question, f, k=6, mode="bm25")
         if len(res.hits) < 3:  # nothing lexical to hold on to: try meaning
@@ -567,6 +581,11 @@ class Pandit:
             out = self.llm.chat(msgs, max_tokens=500)
             text = normalise((out["message"].get("content") or "").strip())
             problems = check(text, question, src, self.cat, used_tools=True)
+            if problems and (fixed := repair(text, src)) != text:  # citation slips need no second LLM call
+                again = check(fixed, question, src, self.cat, used_tools=True)
+                if not again:
+                    trace.append({"step": "validate", "problems": [], "repaired": problems})
+                    return self._done(fixed, program, frame, src, trace, t0, model=out["model"])
             if problems:
                 msgs += [
                     {"role": "assistant", "content": text},
@@ -609,6 +628,34 @@ class Pandit:
             round(time.time() - t0, 2),
             trace,
         )
+
+
+TOP_N = re.compile(r"\btop (\d{1,2})\b", re.I)
+
+
+def cap_rows(facts: str, keep: int = 12) -> str:
+    """The writer sees at most `keep` rows per table (the validator still checks against the full result)."""
+    out, n = [], 0
+    for line in facts.split("\n"):
+        if line.startswith("TABLE:"):
+            n = -1  # the header row follows
+        elif " | " in line:
+            n += 1
+            if n > keep:
+                if n == keep + 1:
+                    out.append("… (more rows not shown)")
+                continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def repair(text: str, src: Sources) -> str:
+    """Deterministic fixes for citation slips: drop tags that don't exist; with one source, cite it."""
+    tags = set(src.chunks) | set(src.stats)
+    fixed = re.sub(r"\[([CSME]\d+)\]", lambda m: m.group(0) if m.group(1) in tags else "", text)
+    if not cited(fixed) and len(tags) == 1:
+        fixed = re.sub(r"\s*$", f" [{next(iter(tags))}]", fixed.rstrip(), count=1)
+    return fixed
 
 
 def as_json(a: Answer) -> str:
