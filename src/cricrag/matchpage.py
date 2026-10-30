@@ -9,6 +9,7 @@ hall_of_fame  all-time lists for the rail
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from cricrag.entities import canon
@@ -211,3 +212,128 @@ def hall_of_fame(con) -> dict[str, Any]:
         )
     lo, hi = con.execute("select min(year(start_date)), max(year(start_date)) from matches").fetchone()
     return {"lists": lists, "span": f"{lo}–{hi}" if lo else ""}
+
+
+# ---------------------------------------------------------------- front page (one season, plus every season's scoring)
+
+_FIX = "replace({}, 'KXIP', 'PBKS')"
+INNINGS = f"""
+WITH m AS (SELECT match_id, year(start_date) yr, title, start_date, status_text, {_FIX.format("winner")} winner,
+                  {_FIX.format("team1")} t1, {_FIX.format("team2")} t2
+           FROM matches WHERE NOT coalesce(is_cancelled, false)),
+i AS (SELECT match_id, inning, any_value(batting_team) team, sum(runs_total) runs, sum(is_wicket::INT) wkts,
+             sum(is_legal::INT) legal, sum(is_six::INT) sixes, sum(is_four::INT) fours
+      FROM balls WHERE inning <= 2 GROUP BY 1, 2)
+SELECT m.*, i.inning, i.team, i.runs, i.wkts, i.legal, i.sixes, i.fours FROM m JOIN i USING (match_id)
+"""
+
+
+def eras(con) -> list[dict[str, Any]]:
+    """Every season's scoring: average completed first-innings total, sixes and run rate per match."""
+    rows = con.execute(
+        f"""WITH x AS ({INNINGS})
+        SELECT yr, round(avg(runs) FILTER (WHERE inning = 1 AND (wkts = 10 OR legal >= 120)), 1) first,
+               round(sum(sixes) / count(DISTINCT match_id), 1) sixes,
+               round(6.0 * sum(runs) / sum(legal), 2) rr, count(DISTINCT match_id) matches
+        FROM x GROUP BY yr ORDER BY yr"""
+    ).fetchall()
+    return [{"year": y, "first": f, "sixes": s, "run_rate": r, "matches": n} for y, f, s, r, n in rows]
+
+
+def _close(r: dict[str, Any]) -> tuple[int, str] | None:
+    """(closeness, how) for a finished match: tie/super over, a small runs margin, or a chase won at the death."""
+    status = (r["status_text"] or "").lower()
+    if re.search(r"d/l|dls|vjd|no result|abandon", status) or r.get("r2") is None:
+        return None
+    if "tied" in status or "super over" in status:
+        return 0, "Tied, decided by a super over" if "super over" in status else "Tied"
+    if r["winner"] == r["team1"] and r["r1"] - r["r2"] <= 5:
+        n = r["r1"] - r["r2"]
+        return n, f"Won by {n} run{'s' if n != 1 else ''}"
+    if r["winner"] == r["team2"] and 120 - r["legal2"] <= 1:
+        left = 120 - r["legal2"]
+        return left, "Chased down off the last ball" if left == 0 else "Chased down with one ball left"
+    return None
+
+
+def season_home(con, year: int) -> dict[str, Any]:
+    """The front page for one season: final, caps, totals and its closest finishes. All SQL on the archive."""
+    rows = con.execute(
+        f"WITH x AS ({INNINGS}) SELECT * FROM x WHERE yr = ? ORDER BY start_date, match_id, inning", [year]
+    )
+    cols = [d[0] for d in rows.description]
+    inns = [dict(zip(cols, r, strict=True)) for r in rows.fetchall()]
+    if not inns:
+        return {"year": year, "available": False}
+    per: dict[int, dict[str, Any]] = {}
+    for r in inns:
+        m = per.setdefault(
+            r["match_id"], {k: r[k] for k in ("match_id", "title", "start_date", "status_text", "winner")}
+        )
+        n = r["inning"]
+        m[f"team{n}"], m[f"r{n}"], m[f"w{n}"], m[f"legal{n}"] = r["team"], r["runs"], r["wkts"], r["legal"]
+    top = max(inns, key=lambda r: r["runs"])
+    final = next((m for m in per.values() if m["title"] == "Final"), None)
+
+    def leader(sql: str) -> dict[str, Any] | None:
+        got = con.execute(sql, [year]).fetchone()
+        return {"name": got[0], "value": int(got[1])} if got else None
+
+    yb = "FROM balls b JOIN matches m USING (match_id) WHERE b.inning <= 2 AND year(m.start_date) = ?"
+    close = sorted(
+        ({**m, "how": c[1], "closeness": c[0]} for m in per.values() if (c := _close(m)) is not None),
+        key=lambda m: (m["closeness"], m["start_date"]),
+    )[:6]
+    return {
+        "year": year,
+        "available": True,
+        "matches": len(per),
+        "runs": sum(r["runs"] for r in inns),
+        "sixes": sum(r["sixes"] for r in inns),
+        "fours": sum(r["fours"] for r in inns),
+        "two_hundreds": sum(1 for r in inns if r["runs"] >= 200),
+        "highest": {
+            "team": top["team"],
+            "runs": top["runs"],
+            "wickets": top["wkts"],
+            "match_id": top["match_id"],
+            "opponent": next(
+                (
+                    x["team"]
+                    for x in inns
+                    if x["match_id"] == top["match_id"] and x["inning"] != top["inning"]
+                ),
+                "",
+            ),
+        },
+        "final": final
+        and {
+            "match_id": final["match_id"],
+            "winner": final["winner"],
+            "result": final["status_text"],
+            "date": str(final["start_date"]),
+            "teams": [final.get("team1"), final.get("team2")],
+        },
+        "orange_cap": leader(
+            f"SELECT any_value(batter), sum(runs_bat) v {yb} GROUP BY batter_id ORDER BY v DESC LIMIT 1"
+        ),
+        "purple_cap": leader(
+            f"SELECT any_value(bowler), sum(bowler_wicket::INT) v {yb} GROUP BY bowler_id ORDER BY v DESC LIMIT 1"
+        ),
+        "most_sixes": leader(
+            f"SELECT any_value(batter), sum(is_six::INT) v {yb} GROUP BY batter_id ORDER BY v DESC LIMIT 1"
+        ),
+        "thrillers": [
+            {
+                "match_id": m["match_id"],
+                "title": m["title"],
+                "date": str(m["start_date"]),
+                "how": m["how"],
+                "teams": [m.get("team1"), m.get("team2")],
+                "scores": [f"{m.get('r1')}/{m.get('w1')}", f"{m.get('r2')}/{m.get('w2')}"],
+                "winner": m["winner"],
+                "result": m["status_text"],
+            }
+            for m in close
+        ],
+    }

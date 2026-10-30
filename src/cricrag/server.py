@@ -553,6 +553,27 @@ def create_app(make_agent: Callable[[], Any] | None = None) -> FastAPI:
                 enrich_match(detail, int(found.group(1)))
         return detail
 
+    @app.get("/api/home")
+    def home(season: int = 2025):
+        """Front page: one season's final, caps, totals and closest finishes, plus every season's scoring."""
+        key = f"home-{season}"
+        if key not in state:
+            from cricrag.archive import connect
+            from cricrag.matchpage import eras, season_home
+
+            try:
+                with connect() as con:
+                    page = season_home(con, season)
+                    if "eras" not in state:
+                        state["eras"] = eras(con)
+            except Exception as exc:
+                raise HTTPException(503, f"archive unavailable: {exc}") from exc
+            for item in [page.get("final"), page.get("highest"), *page.get("thrillers", [])]:
+                if item and (slugs := match_slugs(int(item["match_id"]), root)):
+                    item.update(slugs)
+            state[key] = page
+        return {**state[key], "eras": state["eras"]}
+
     @app.get("/api/news")
     def news():
         from cricrag.news import articles

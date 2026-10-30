@@ -5,6 +5,8 @@ import type { CSSProperties, FormEvent, ReactNode } from "react";
 import { ClarifyChatCard, ScopeChatCard, StatsChatCard, StatsPanel } from "./stats";
 import type { StatsCard, ClarifyCard, ScopeCard } from "./stats";
 import { OverChart, PartnershipChart, PhaseChart, PitchCard, usePar, Worm } from "./match-charts";
+import { FrontPage } from "./home";
+import type { News } from "./home";
 import type { Partnership } from "./match-charts";
 
 // ESPN commentary marks emphasis with <b>/<strong>/<i>/<em>. Render those as React elements and drop any other
@@ -57,8 +59,12 @@ type Drop = {
 };
 type HallList = { title: string; group: string; unit: string; rows: { name: string; value: number | string }[] };
 type HallOfFame = { lists: HallList[]; span: string };
-type Article = { kind: string; title: string; url: string; source: string; year?: number; published?: string; summary?: string };
-type News = { live: Article[]; reading: Article[]; kinds: string[] };
+type Theme = "floodlit" | "night" | "pitch" | "pavilion" | "pinkball";
+const THEMES: { id: Theme; label: string; dark: boolean }[] = [
+  { id: "floodlit", label: "Floodlit", dark: false }, { id: "night", label: "Night match", dark: true },
+  { id: "pitch", label: "Pitch", dark: false }, { id: "pavilion", label: "Pavilion", dark: false },
+  { id: "pinkball", label: "Pink ball", dark: true },
+];
 type MatchDetail = {
   match: ArchiveMatch; innings: Innings[]; balls: Ball[];
   ball_coverage: { level: string; label: string; note: string };
@@ -204,7 +210,9 @@ function teamColor(detail: MatchDetail | null, name?: string) {
 // ---------------------------------------------------------------- app
 
 export default function Home() {
-  const [dark, setDark] = useState(false);
+  const [theme, setTheme] = useState<Theme>("floodlit");
+  const dark = THEMES.find((item) => item.id === theme)?.dark ?? false;
+  const themeMenu = useRef<HTMLDetailsElement>(null);
   const [seasons, setSeasons] = useState<number[]>(FALLBACK_SEASONS);
   const [season, setSeason] = useState(2025);
   const [query, setQuery] = useState("");
@@ -234,7 +242,7 @@ export default function Home() {
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [toast, setToast] = useState("");
-  const [mobileView, setMobileView] = useState<"chat" | "matches" | "match" | "stats">("chat");
+  const [mobileView, setMobileView] = useState<"chat" | "matches" | "match" | "stats">("matches");
   // Stats opens the workspace on demand (like a match does); it can sit over an open match.
   const [showStats, setShowStats] = useState(false);
   const openStats = useCallback(() => { setShowStats(true); setMobileView("stats"); }, []);
@@ -361,6 +369,22 @@ export default function Home() {
       });
   }, []);
 
+  // The chosen theme is a per-viewer convenience; storage may be unavailable, and that's fine.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        const saved = (new URL(window.location.href).searchParams.get("theme") ?? window.localStorage.getItem("cricrag-theme")) as Theme | null;
+        if (saved && THEMES.some((item) => item.id === saved)) setTheme(saved);
+      } catch { /* no storage: keep the default */ }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+  const chooseTheme = useCallback((next: Theme) => {
+    setTheme(next);
+    if (themeMenu.current) themeMenu.current.open = false;
+    try { window.localStorage.setItem("cricrag-theme", next); } catch { /* no storage */ }
+  }, []);
+
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [messages, chatLoading]);
 
   useEffect(() => {
@@ -398,7 +422,7 @@ export default function Home() {
   function closeMatch() {
     clearMatch();
     setMatchUrl(null);
-    setMobileView("chat");
+    setMobileView("matches");
   }
 
   function applyActions(actions: UiAction[]) {
@@ -411,7 +435,7 @@ export default function Home() {
         if (action.season && seasons.includes(action.season)) setSeason(action.season);
         setQuery(action.query ?? "");
       }
-      if (action.type === "theme" && action.value) setDark(action.value === "dark");
+      if (action.type === "theme" && action.value) setTheme(action.value === "dark" ? "night" : "floodlit");
       if (action.type === "copy_summary") shareMatch();
     }
     if (!opening && requestedTab && selected) setMatchTab(requestedTab);
@@ -479,15 +503,18 @@ export default function Home() {
     : [`Tell me about the ${season} final`, `Most sixes in IPL ${season}`, "Kohli chasing vs batting first", "Who are the best finishers in the IPL?"];
 
   return (
-    <div className={`app ${dark ? "dark" : "light"} view-${mobileView}${selected ? " has-match" : ""}${showStats ? " stats-open" : ""}`}>
+    <div className={`app ${dark ? "dark" : "light"} theme-${theme} view-${mobileView}${selected ? " has-match" : ""}${showStats ? " stats-open" : ""}${!selected && !showStats ? " home-open" : ""}`}>
       <header className="topbar">
-        <button className="brand" onClick={() => setMobileView("chat")} aria-label="cricket-rag home"><span className="brand-mark" /><span>cricket<span>rag</span></span></button>
+        <button className="brand" onClick={() => { if (selected) closeMatch(); setShowStats(false); setMobileView("matches"); }} aria-label="cricket-rag front page"><span className="brand-mark" /><span>cricket<span>rag</span></span></button>
         <nav className="topnav" aria-label="Main">
-          <button className={!showStats ? "active" : ""} onClick={() => { setShowStats(false); setMobileView(selected ? "match" : "chat"); }}>Match centre</button>
+          <button className={!showStats ? "active" : ""} onClick={() => { setShowStats(false); setMobileView(selected ? "match" : "matches"); }}>Match centre</button>
           <button className={showStats ? "active" : ""} onClick={openStats} aria-label="Open IPL stats">Stats</button>
           <button onClick={() => setDocsOpen(true)} aria-label="Open documentation">Docs</button>
         </nav>
-        <button className="theme-button" onClick={() => setDark((value) => !value)} aria-label="Toggle color theme">{dark ? "☼" : "☾"}</button>
+        <details className="theme-picker" ref={themeMenu}>
+          <summary aria-label="Choose a colour theme"><i className={`swatch ${theme}`} /><span>{THEMES.find((item) => item.id === theme)?.label}</span></summary>
+          <div className="theme-menu" role="menu">{THEMES.map((item) => <button key={item.id} role="menuitemradio" aria-checked={item.id === theme} className={item.id === theme ? "active" : ""} onClick={() => chooseTheme(item.id)}><i className={`swatch ${item.id}`} />{item.label}</button>)}</div>
+        </details>
       </header>
       <div className="ticker" aria-label={`IPL ${season} results`}>
         <div className="ticker-controls">
@@ -509,7 +536,6 @@ export default function Home() {
       <aside className="rail" aria-label="IPL archive">
         <div className="rail-scroll">
           <HallOfFamePanel hall={hall} offline={Boolean(archiveError)} />
-          <ReadingPanel news={news} />
         </div>
         <footer className="data-status"><span className={`status-dot ${dataStatus?.cricsheet.synced ? "connected" : archiveError ? "offline" : ""}`} /><div><strong>{dataStatus ? dataStatus.canonical_source : "Checking data…"}</strong><small>{dataStatus?.cricsheet.synced ? `${dataStatus.cricsheet.matches} matches · ${dataStatus.cricsheet.seasons.at(-1)}–${dataStatus.cricsheet.seasons[0]}` : dataStatus ? `Run: ${dataStatus.cricsheet.sync_command}` : ""}</small></div></footer>
       </aside>
@@ -552,7 +578,11 @@ export default function Home() {
         {showStats && <StatsPanel season={season} seasons={seasons} matchOpen={Boolean(selected)}
           onBackToMatch={() => { setShowStats(false); setMobileView("match"); }}
           onClose={() => { setShowStats(false); setMobileView("chat"); }} />}
-        {!selected && !showStats && <div className="workspace-empty"><span>◉</span><h3>No match open</h3><p>Pick one from the archive, or ask Pandit about any IPL match.</p></div>}
+        {!selected && !showStats && <div className="workspace-body fp-body"><FrontPage season={season} onSeason={setSeason} news={news}
+          onOpen={(ref) => { if (ref.series_slug && ref.match_slug) openBySlugs(ref.series_slug, ref.match_slug); }}
+          onAsk={(question) => { setMobileView("chat"); void sendChat(undefined, question); }}
+          onChat={() => setMobileView("chat")}
+          hall={<HallOfFamePanel hall={hall} offline={Boolean(archiveError)} />} /></div>}
         {selected && !showStats && <>
           <div className="match-hero">
             <div className="hero-actions"><button className="back-link" onClick={closeMatch}>← Close</button><button className="share-button" onClick={shareMatch}>Copy summary + link</button></div>
@@ -573,7 +603,7 @@ export default function Home() {
       </section>
 
       <nav className="mobile-nav" aria-label="Sections">
-        {(["matches", "chat", "stats", "match"] as const).map((view) => <button key={view} className={mobileView === view ? "active" : ""} onClick={() => { if (view === "stats" || view === "match") setShowStats(view === "stats"); setMobileView(view); }} disabled={view === "match" && !selected}>{{ matches: "Explore", chat: "Pandit", stats: "Stats", match: "Match" }[view]}</button>)}
+        {(["matches", "chat", "stats", "match"] as const).map((view) => <button key={view} className={mobileView === view ? "active" : ""} onClick={() => { if (view === "stats" || view === "match") setShowStats(view === "stats"); setMobileView(view); }} disabled={view === "match" && !selected}>{{ matches: "Home", chat: "Pandit", stats: "Stats", match: "Match" }[view]}</button>)}
       </nav>
       <DocsDrawer open={docsOpen} docs={docs} onClose={() => setDocsOpen(false)} />
       <TraceDrawer open={traceOpen} graph={graph} trace={trace} loading={chatLoading} onClose={() => setTraceOpen(false)} />
@@ -679,21 +709,6 @@ function HallOfFamePanel({ hall, offline }: { hall: HallOfFame | null; offline: 
       <ol>{list.rows.map((row, index) => <li key={`${row.name}-${index}`}><span>{index + 1}</span><strong>{row.name}</strong><b>{row.value}{list.unit && index === 0 ? <small> {list.unit}</small> : null}</b></li>)}</ol>
     </section>)}</div>
   </div>;
-}
-
-const KIND_LABELS: Record<string, string> = { rules: "Rule changes", trends: "Trends", records: "Records", news: "News" };
-
-function ReadingPanel({ news }: { news: News | null }) {
-  const [kind, setKind] = useState("rules");
-  if (!news) return null;
-  const items = [...news.live.filter((item) => item.kind === kind), ...news.reading.filter((item) => item.kind === kind)];
-  return <section className="reading" aria-label="IPL reading list">
-    <div className="hall-head"><strong>Read more</strong><span>ESPNcricinfo</span></div>
-    <div className="hall-groups">{news.kinds.map((name) => <button key={name} className={kind === name ? "active" : ""} onClick={() => setKind(name)}>{KIND_LABELS[name] ?? name}</button>)}</div>
-    <ul className="reading-list" key={kind}>{items.map((item, index) => <li key={item.url} style={{ "--i": index } as CSSProperties}>
-      <a href={item.url} target="_blank" rel="noopener noreferrer"><strong>{item.title}</strong><small>{item.published ? <b className="fresh">New</b> : null}{item.source}{item.year ? ` · ${item.year}` : item.published ? ` · ${formatDate(item.published.slice(0, 10))}` : ""}<i aria-hidden="true">↗</i></small></a>
-    </li>)}</ul>
-  </section>;
 }
 
 function teamAbbr(detail: MatchDetail, name?: string) {

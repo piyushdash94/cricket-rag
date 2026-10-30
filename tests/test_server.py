@@ -161,3 +161,16 @@ def test_news_keeps_ipl_stories_and_sorts_them():
     assert {r["kind"] for r in got["reading"]} == {"rules", "trends", "records"}
     assert all(r["url"].startswith("https://") for r in got["reading"])
     assert articles(None, lambda: 1 / 0)["live"] == []  # offline: the reading list still shows
+
+
+def test_front_page_for_a_season(archive):
+    import duckdb
+
+    from cricrag.matchpage import eras, season_home
+
+    con = duckdb.connect(str(archive), read_only=True)
+    page = season_home(con, 2025)
+    assert page["available"] and page["matches"] == 1 and page["final"]["winner"] == "RCB"
+    assert page["orange_cap"]["value"] >= 1 and page["highest"]["team"] in ("RCB", "PBKS")
+    assert [e["year"] for e in eras(con)] == [2021, 2025]
+    assert season_home(con, 1999) == {"year": 1999, "available": False}

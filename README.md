@@ -96,12 +96,15 @@ The backend loads cricbot's archive and stats modules in-process from `CRICBOT_R
 does not need to be running. The UI is cricbot's match centre (archive rail, Pandit chat, match workspace,
 Stats, Docs, live trace) in a blue-and-white scorecard theme. Pandit's pipeline steps stream into the trace pane
 as they run; stats answers show the tables behind them; a match story opens that match beside the chat.
-In each match, Overview shows partnerships and the dropped catches (fielder, bowler, the batter's score then and
-the runs added afterwards), and Momentum lists the shifts and compares powerplay, middle and death overs.
-The season picker and search sit above the results strip, which shows the whole season. The left rail holds
-all-time hall-of-fame lists and a reading list of ESPNcricinfo pieces on rule changes, trends and records, plus
-any IPL stories in ESPN's live feed (`/api/news`, or `cricrag news` in a terminal). Commentary comes from the
-local archive when ESPN's live feed is unavailable.
+The front page opens on a season: its champions and final, a chart of the average first-innings total for every
+season (click a season to load it; the Impact Player rule's arrival in 2023 is marked), the season's numbers,
+orange and purple caps, its closest finishes, and a reading room of ESPNcricinfo pieces on rule changes, trends
+and records plus any IPL stories in ESPN's live feed (`/api/home`, `/api/news`, `cricrag news`). The season
+picker and search sit above the results strip; the left rail holds all-time lists; Pandit sits on the right.
+In each match, Overview shows partnerships and dropped catches (fielder, bowler, the batter's score then and the
+runs added afterwards), and Momentum lists the shifts and compares powerplay, middle and death overs. Five
+colour themes: Floodlit, Night match, Pitch, Pavilion and Pink ball. Commentary comes from the local archive
+when ESPN's live feed is unavailable.
 
 Other commands: `cricrag frame "<question>"` (what the code extracted), `cricrag search`, `cricrag news`,
 `cricrag eval-pandit --suite v3|events`, `cricrag eval-routes --mode plan|full`, `cricrag eval-retrieval`.
