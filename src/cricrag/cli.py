@@ -223,6 +223,19 @@ def eval_retrieval(
 
 
 @app.command()
+def news(live_only: bool = typer.Option(False, "--live", help="only the live ESPN feed")):
+    """IPL reading: live stories from ESPN's feed, plus the hand-checked ESPNcricinfo reading list."""
+    from cricrag.news import articles
+
+    got = articles(settings().data_dir / "cache" / "news.json")
+    rows = got["live"] + ([] if live_only else got["reading"])
+    for a in rows:
+        console.print(f"[bold]{a['kind']:8}[/bold] {a['title']}\n         {a['url']}")
+    if not got["live"]:
+        console.print("[dim]No IPL stories in ESPN's live feed right now.[/dim]")
+
+
+@app.command()
 def serve(host: str = "127.0.0.1", port: int = 8000, reload: bool = False):
     """The UI's API (frontend/ui): Pandit plus cricbot's archive, match pages and stats, in one process."""
     import uvicorn

@@ -553,6 +553,12 @@ def create_app(make_agent: Callable[[], Any] | None = None) -> FastAPI:
                 enrich_match(detail, int(found.group(1)))
         return detail
 
+    @app.get("/api/news")
+    def news():
+        from cricrag.news import articles
+
+        return articles(s.data_dir / "cache" / "news.json")
+
     @app.get("/api/hall-of-fame")
     def hall():
         if "hall" not in state:

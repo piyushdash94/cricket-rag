@@ -97,12 +97,13 @@ does not need to be running. The UI is cricbot's match centre (archive rail, Pan
 Stats, Docs, live trace) in a blue-and-white scorecard theme. Pandit's pipeline steps stream into the trace pane
 as they run; stats answers show the tables behind them; a match story opens that match beside the chat.
 In each match, Overview shows partnerships and the dropped catches (fielder, bowler, the batter's score then and
-the runs added afterwards), and Momentum compares powerplay, middle and death overs. The left rail shows
-all-time hall-of-fame lists; searching switches it to the season's matches, which also run across the top.
-Commentary comes from the local archive when ESPN's live feed is unavailable, and the turning point is the
-strongest shift in the winner's favour.
+the runs added afterwards), and Momentum lists the shifts and compares powerplay, middle and death overs.
+The season picker and search sit above the results strip, which shows the whole season. The left rail holds
+all-time hall-of-fame lists and a reading list of ESPNcricinfo pieces on rule changes, trends and records, plus
+any IPL stories in ESPN's live feed (`/api/news`, or `cricrag news` in a terminal). Commentary comes from the
+local archive when ESPN's live feed is unavailable.
 
-Other commands: `cricrag frame "<question>"` (what the code extracted), `cricrag search`,
+Other commands: `cricrag frame "<question>"` (what the code extracted), `cricrag search`, `cricrag news`,
 `cricrag eval-pandit --suite v3|events`, `cricrag eval-routes --mode plan|full`, `cricrag eval-retrieval`.
 The scripts in `scripts/eval/` re-run the public-question tests above; `scripts/groq_quota.py` shows how much
 of Groq's daily quota is left.
@@ -122,6 +123,7 @@ src/cricrag/
   finder.py                 guarded LLM-written SQL over documented views
   server.py                 the UI's API (`cricrag serve`): chat stream, pipeline graph, archive routes
   matchpage.py              match page extras (local commentary, drops, shifts) and the hall of fame
+  news.py                   IPL reading list: ESPN's live feed (IPL stories only) + hand-checked links
   index/, retrieval/        over-level chunks, LanceDB, BM25 / dense / hybrid
   eval/                     v3, events, routing and retrieval evaluations
 evals/                      routing labels and results

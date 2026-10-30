@@ -129,3 +129,35 @@ def test_hall_of_fame_lists(archive):
     assert runs["rows"][0] == {"name": "Shashank Singh", "value": 6}
     titles = next(x for x in hof["lists"] if x["title"] == "Most titles")
     assert titles["rows"] == [{"name": "RCB", "value": 1}]
+
+
+def test_news_keeps_ipl_stories_and_sorts_them():
+    from cricrag.news import articles
+
+    feed = {
+        "articles": [
+            {
+                "headline": "IPL retains the Impact Player rule",
+                "description": "",
+                "links": {"web": {"href": "http://www.espn.com/cricket/story/_/id/1/x"}},
+            },
+            {
+                "headline": "Root's 40th Test hundred",
+                "description": "",
+                "links": {"web": {"href": "https://www.espn.com/cricket/story/_/id/2/y"}},
+            },
+            {
+                "headline": "Fastest fifty in IPL history",
+                "description": "",
+                "links": {"web": {"href": "https://www.espn.com/cricket/story/_/id/3/z"}},
+            },
+        ]
+    }
+    got = articles(None, lambda: feed)
+    assert [(a["kind"], a["url"][:12]) for a in got["live"]] == [
+        ("rules", "https://www."),
+        ("records", "https://www."),
+    ]
+    assert {r["kind"] for r in got["reading"]} == {"rules", "trends", "records"}
+    assert all(r["url"].startswith("https://") for r in got["reading"])
+    assert articles(None, lambda: 1 / 0)["live"] == []  # offline: the reading list still shows
