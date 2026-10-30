@@ -94,7 +94,7 @@ def facts(con, mid: int) -> list[str]:
         out.append(
             f"Innings {inn}: {team} {runs}/{wkts} in {balls // 6}.{balls % 6} overs. "
             f"Top batters: {', '.join(f'{p} {r} ({b})' for p, r, b in bat)}. "
-            f"Top bowlers: {', '.join(f'{p} {w}/{c} ({b // 6}.{b % 6})' for p, w, c, b in bowl)}."
+            f"Best bowling against {team}: {', '.join(f'{p} {w}/{c} ({b // 6}.{b % 6})' for p, w, c, b in bowl)}."
         )
     pom = [r[0] for r in _rows(con, "select player from cs_awards where match_id=?", mid)]
     if pom:

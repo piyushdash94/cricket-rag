@@ -175,3 +175,75 @@ def test_citation_slips_are_repaired_without_an_llm_call():
     facts = "TABLE: t\na | b\n" + "\n".join(f"{i} | {i}" for i in range(20)) + "\nNOTE: n"
     capped = cap_rows(facts, 12)
     assert "11 | 11" in capped and "12 | 12" not in capped and capped.endswith("NOTE: n")
+
+
+def test_second_review_fixes(catalog, archive):
+    from cricrag.agent.validate import FAKE_TAG, initials_match
+
+    hist = [
+        {"role": "user", "content": "which bowler had the best economy against Rajasthan Royals in 2008?"},
+        {"role": "assistant", "content": "Bhuvneshwar Kumar had the best economy, 3.88 [S1]."},
+    ]
+    f = build_frame("how many dot balls did he bowl?", catalog, hist)
+    assert f.players == ["Bhuvneshwar Kumar"] and f.years == [2008]
+    assert (
+        mismatch("Dhoni's average against left arm spinners", "Dhoni v spin") == "bowling_style_not_in_stats"
+    )
+    assert mismatch("Dhoni's average against spinners", "Dhoni v spin") is None
+    assert FAKE_TAG.findall("Played in Hyderabad [HEADER]. Then [C5].") == ["HEADER"]
+    assert initials_match("Cameron White", "CL White c Rayudu b Bumrah 7") and not initials_match(
+        "Josh White", "CL White"
+    )
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(f"ATTACH '{archive}' AS a (READ_ONLY)")
+    con.execute(finder.VIEWS[0])  # matches, with the toss
+    con.execute(next(v for v in finder.VIEWS if "VIEW balls AS" in v))  # balls, with bowling styles
+    assert con.execute("SELECT toss_winner FROM matches WHERE match_id = 1473511").fetchone() == ("PBKS",)
+    assert con.execute("SELECT count(*) FROM balls WHERE bowl_kind = 'pace'").fetchone()[0] >= 1
+
+
+def test_possessive_pronoun_and_who_shape(catalog):
+    from cricrag.agent import intent as itn
+    from cricrag.agent.pandit import spell_out
+    from cricrag.entities import link_players
+
+    assert link_players("what was Kohli's average against spin?", catalog).players == ["Virat Kohli"]
+    f = build_frame("how many dot balls did he bowl in 2008?", catalog)
+    f.players = ["Bhuvneshwar Kumar"]
+    asked, past = spell_out(f.question, f, [{"role": "user", "content": "best economy v RR in 2008"}])
+    assert asked == "how many dot balls did Bhuvneshwar Kumar bowl in 2008?" and past is None
+    it = itn.Intent(answer="rank", unit="team", measure="result", scope="season")
+    players = [{"title": "t", "columns": ["batter", "sr"], "rows": 10}]
+    assert itn.shape_fits(it, players, build_frame("Who are the best finishers in the IPL?", catalog)) is None
+    assert itn.shape_fits(it, players, build_frame("Which team has the best finishers?", catalog))
+
+
+def test_a_named_player_must_reach_the_plan(catalog):
+    from cricrag.agent.pandit import uncovered
+
+    f = build_frame("how many dot balls did Bhuvneshwar Kumar bowl in 2008?", catalog)
+    assert uncovered(f, {"calls": [{"args": {"metric": "dots"}}], "summary": "Most dots: X 166", "facts": ""})
+    assert (
+        uncovered(f, {"calls": [{"args": {"player": ["Bhuvneshwar Kumar"]}}], "summary": "", "facts": ""})
+        is None
+    )
+
+
+def test_a_first_name_glued_to_the_wrong_surname_is_caught(catalog):
+    from cricrag.agent.validate import invented_names
+
+    assert invented_names("Led by Rashid Kohli's 47.", "V Kohli 47 (38)", catalog) == ["Rashid Kohli"]
+    assert invented_names("Led by Virat Kohli's 47.", "V Kohli 47 (38)", catalog) == []
+
+
+def test_bowler_against_a_bowler_type_asks_what_was_meant():
+    from cricrag.agent.pandit import BOWLER_VS_BOWLER
+
+    assert BOWLER_VS_BOWLER.search(
+        "which left arm bowler had the best economy against left arm spinners in 2025?"
+    )
+    assert not BOWLER_VS_BOWLER.search("which batter has the best strike rate against left-arm spinners?")
+    assert not BOWLER_VS_BOWLER.search("which bowler has the best economy against left-handers?")
+    assert not BOWLER_VS_BOWLER.search("Dhoni's average against left arm spinners")

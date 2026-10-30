@@ -107,6 +107,8 @@ KEYS = {
 }
 
 
+WHO = re.compile(r"^\s*who\b", re.I)
+TEAM_WORD = re.compile(r"\b(team|teams|side|sides|franchise\w*)\b", re.I)
 ONE_TOTAL = re.compile(r"\b(total|in all|combined)\b", re.I)
 
 
@@ -123,7 +125,10 @@ def shape_fits(it: Intent, tables: list[dict], frame, text: str = "") -> str | N
         return None  # nothing to judge by: the writer and validator decide
     if it.unit == "season" and it.answer in ("rank", "list") and "player" in keys:
         return "shape_wants_seasons_got_players"
-    if it.unit == "team" and it.answer == "rank" and keys == {"player"}:
+    person = WHO.search(frame.question) and not TEAM_WORD.search(
+        frame.question
+    )  # "who are the best finishers"
+    if it.unit == "team" and it.answer == "rank" and keys == {"player"} and not person:
         return "shape_wants_teams_got_players"
     if it.unit == "player" and it.answer in ("rank", "list") and "player" not in keys and "team" in keys:
         return "shape_wants_players_got_teams"

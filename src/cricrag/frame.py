@@ -32,6 +32,7 @@ LAST_OVER = re.compile(r"\b(last|final) over\b", re.I)
 NTH_OVER = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th) over\b|\bover (\d{1,2})\b", re.I)
 # "this match" in a follow-up points at the match the previous answer named
 DEICTIC = re.compile(r"\b(this|that|the same) (match|game|innings|chase|final|collapse|contest)\b", re.I)
+PRONOUN = re.compile(r"\b(he|his|him|she|her)\b", re.I)
 TITLE = re.compile(r"\b(\d{1,2}(?:st|nd|rd|th) Match|Qualifier \d|Eliminator|Final)\b", re.I)
 
 
@@ -59,6 +60,19 @@ def build_frame(question: str, cat: Catalog, history: list[dict[str, str]] | Non
     f = _link(question, cat)
     if history and DEICTIC.search(question) and not f.teams and _previous_match(f, history, cat):
         return f
+    if history and PRONOUN.search(question) and not f.players:
+        said = next((t.get("content", "") for t in reversed(history) if t.get("role") == "assistant"), "")
+        named = _link(said, cat).players
+        if len(named) == 1:  # "how many dots did he bowl?" -> the one player the last answer named
+            f.players = named
+            if not f.years:
+                prev = next(
+                    (_link(t.get("content", ""), cat) for t in reversed(history) if t.get("role") == "user"),
+                    None,
+                )
+                if prev and prev.years:
+                    f.years, f.seasons = prev.years, prev.seasons
+            return f
     if history and not (f.players or f.teams):
         for turn in reversed(history):
             if turn.get("role") != "user":

@@ -23,7 +23,8 @@ from cricrag.frame import Frame
 FIX = "replace({}, 'KXIP', 'PBKS')"
 _M = f"""SELECT match_id, season, year(start_date) AS year, start_date, venue, {FIX.format("team1")} AS team1,
   {FIX.format("team2")} AS team2, {FIX.format("winner")} AS winner, status_text AS result, title,
-  {STAGE_SQL} AS stage FROM a.matches WHERE NOT coalesce(is_cancelled, false)"""
+  {STAGE_SQL} AS stage, t.toss_winner, t.toss_decision
+  FROM a.matches LEFT JOIN a.cs_match_info t USING (match_id) WHERE NOT coalesce(is_cancelled, false)"""
 _I = f"""SELECT i.match_id, m.season, m.year, m.stage, i.inning, {FIX.format("i.team")} AS team,
   CASE WHEN m.team1 = {FIX.format("i.team")} THEN m.team2 ELSE m.team1 END AS opponent,
   i.runs, i.wickets, i.balls, i.extras, m.winner = {FIX.format("i.team")} AS won
@@ -39,17 +40,28 @@ VIEWS = [
        FROM a.ref_bowling r JOIN innings i USING (match_id, inning)""",
     ev.BASE.replace("cb.", "a.")
     .replace("VIEW b AS", "VIEW balls AS")
-    .replace("m.season,", "m.season, year(m.start_date) AS year,"),
+    .replace(
+        "m.season,",
+        "m.season, year(m.start_date) AS year, bs.bowl_kind, bs.bowl_style, bs.bowl_arm, bh.bat_hand,",
+    )
+    .replace(
+        "JOIN a.matches m USING (match_id)",
+        "JOIN a.matches m USING (match_id) LEFT JOIN a.player_styles bs ON bs.player_id = x.bowler_id"
+        " LEFT JOIN a.player_styles bh ON bh.player_id = x.batter_id",
+    ),
     "CREATE OR REPLACE TEMP VIEW events AS SELECT * FROM e.events",
 ]
 
 CARD = """DuckDB views over IPL 2008-2026. Team codes: {codes}.
-matches(match): match_id, season, year INT, start_date, venue, team1, team2, winner, result, title, stage ('league'|'playoff'|'final')
+matches(match): match_id, season, year INT, start_date, venue, team1, team2, winner, result, title, stage ('league'|'playoff'|'final'), toss_winner, toss_decision ('bat'|'field')
 innings(team innings, super overs excluded): match_id, season, year, stage, inning (1 or 2), team, opponent, runs, wickets, balls, extras, won BOOL
 batting(batter innings): match_id, season, year, stage, inning, team, opponent, position, player, runs, balls, fours, sixes, is_out BOOL, dismissal
 bowling(bowler innings): match_id, season, year, stage, inning, team (bowling side), opponent, player, balls, conceded, wickets, dots, wides, noballs
-balls(delivery): match_id, year, stage, inning, over_number (1-20), ball_in_over, sequence, bat (batting team), bowl (bowling team), phase ('powerplay' overs 1-6|'middle' 7-15|'death' 16-20), batter, non_striker, bowler, runs_total, runs_bat, extras, wide_runs, noball_runs, charged (runs charged to the bowler: no byes/leg byes), is_legal, is_wide, is_noball, is_four, is_six, is_wicket, bowler_wicket, dismissal_type, player_out
-events(notable moments): type ('wicket','fifty','hundred','partnership','haul','hattrick','maiden','big_over','drop','misfield','overthrow','finish','shift'), match_id, season, year, stage, inning, over, batting_team, bowling_team, phase, player, player2, fielder, detail, value"""
+balls(delivery): match_id, year, stage, inning, over_number (1-20), ball_in_over, sequence, bat (batting team), bowl (bowling team), phase ('powerplay' overs 1-6|'middle' 7-15|'death' 16-20), batter, non_striker, bowler, runs_total, runs_bat, extras, wide_runs, noball_runs, charged (runs charged to the bowler: no byes/leg byes), is_legal, is_wide, is_noball, is_four, is_six, is_wicket, bowler_wicket, dismissal_type, player_out,
+  bowl_kind ('spin'|'pace'), bowl_style (e.g. 'slow left-arm orthodox', 'left-arm wrist-spin', 'right-arm offbreak', 'legbreak', 'right-arm fast'), bowl_arm ('left'|'right'), bat_hand ('left'|'right')
+events(notable moments): type ('wicket','fifty','hundred','partnership','haul','hattrick','maiden','big_over','drop','misfield','overthrow','finish','shift'), match_id, season, year, title, stage, inning, over, label, batting_team, bowling_team, phase, player, player2, fielder, detail, value, value2, side, note, close
+  drop: player = fielder (NULL if unnamed), player2 = batter, note = bowler, value2 = batter's score then, value = runs he added after
+  shift: detail = 'wicket_cluster'|'scoring_burst'|'squeeze'|'chase_swing'|'missed_chance', value = swing in runs, side = team it favoured, close = decisive shift of the match"""
 
 PROMPT = """Write ONE DuckDB SELECT that answers the question from these views only.
 {card}
@@ -65,6 +77,12 @@ Rules (data conventions):
 - Career milestones ("fewest balls/innings to N runs/sixes/wickets"): a running total per player over the whole
   career in time order (join matches for start_date; then inning, sequence); the answer is the balls/innings count at
   the first row where the running total reaches N. Never answer with a rate or N/rate.
+- Rates (economy, average, strike rate) in a ranking need a sample: at least 60 balls unless the question sets one.
+- Bowler types: spinners = bowl_kind 'spin'; left-arm spinners = bowl_kind 'spin' AND bowl_arm 'left';
+  left-arm pacers = bowl_kind 'pace' AND bowl_arm 'left'; left-handers = bat_hand 'left'.
+- A batter against a bowler type (spin, left-arm, legbreak...) or a bowler against left/right-handers is ball-level:
+  sum runs_bat and non-wide balls in balls with the style filter; dismissals = rows where player_out is that batter
+  (bowler_wicket for the bowler's share). Never use whole-innings rows from batting for these.
 - Bowler wickets = bowler_wicket (run outs are not the bowler's); runs conceded = charged (byes and leg byes excluded).
 - "minimum N", "at least N", "min N" in the question is a HAVING filter on the count it names.
 - Strike rate = 100*runs/balls, economy = 6*conceded/balls, average = runs/dismissals.

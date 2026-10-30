@@ -32,7 +32,7 @@ The five misses had five different causes. Each got a general fix (no rules writ
 | Question | Before | Cause | After |
 |---|---|---|---|
 | Biggest batting collapse, 2026 | GT all out 100 (wrong) | "collapse" didn't filter to wicket clusters | DC 6 for 8 v RCB |
-| "Commentary snippets from this match" | snippets from five other matches | follow-up lost the match | resolved from the last answer; that match opens beside the chat |
+| "Commentary snippets from this match" | snippets from unrelated matches | follow-up lost the match | resolved from the last answer; that match opens beside the chat |
 | Kohli's death-overs average, 2024 | "average not in the evidence" | table had runs and outs, no average | 48.5, computed in code |
 | Fewest balls to 100 sixes | Gayle, "866.53 balls per 100" (a rate) | finder used a rate; writer's abstention ended the run | Russell, 657 balls (running total) |
 | Highest spinner death economy, 2026 | the *best* economies | planner sent order=best; "top 5" sent as a chase target | Kuldeep 12.83 … Dubey 8.40 |
@@ -50,6 +50,27 @@ had been seen.
 Tokens on that batch: 57.1k vs 56.8k on 25 Oct (+0.5%). Fixing citation slips in code saved a retry where it
 fired (one question), and long tables are capped at 12 rows for the writer, but route changes between runs
 (one question moved to the finder, another away from it) outweigh both. No token saving is claimed.
+
+## 30 Oct evening: twelve more questions from the UI
+
+Checked against SQL: 5 of 12 were right. After the fixes below, 11 are right and one now gets a clarifying
+question (re-run without the LLM cache, follow-ups with history):
+
+| Question | Before | Cause | After |
+|---|---|---|---|
+| Dhoni's average v left-arm spin | a table of bowlers v left-handers | "Dhoni's" not linked; cricbot has spin/pace only | 42.87 (finder, ball-level; 45.93 counting only the bowler's wickets) |
+| "how many dot balls did **he** bowl?" | 771 | "he" not resolved; cricbot re-added the earlier team | 84 for the bowler just named |
+| Costliest drops | fielders with most drops | routed to fielding counts | KL Rahul +136, Abhishek Sharma +135, de Kock +127 … |
+| Biggest momentum swing | a 21-run over from commentary | shifts excluded from cross-match questions | RCB v SRH 2025: 7 for 16, swing 81.3 |
+| Most tosses won | "toss data not available" | toss not in the finder's views | MI 160 |
+| 2017 final in detail | over-by-over commentary, no result, a fake "[HEADER]" tag | story writer rejected (a name the evidence didn't have); fell to search | the match facts, result and turning point |
+| Left-arm bowler v left-arm spinners | Noor Ahmad from a spinners-v-left-handers table | the question pairs a bowler with a bowler type | asks which comparison was meant |
+
+Right before and still right: most wides 2026 (Arshdeep 28), best finishers, most player-of-the-match awards by a
+bowler (Narine 18), fastest to 100 wickets (Rabada, 64 innings / 1,438 balls). Best economy v RR in 2008 is
+Maharoof 5.58 at cricbot's 60-ball minimum (Irfan Pathan 3.88 off 48 balls without one); the reply does not
+always say the minimum. Dot balls depend on the definition: 84 with no runs off the ball, 90 when byes and leg
+byes count as dots.
 
 ## Benchmarks
 

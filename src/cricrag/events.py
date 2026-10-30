@@ -234,7 +234,7 @@ TYPE_CUES: list[tuple[str, re.Pattern]] = [
     (
         "drop",
         re.compile(
-            r"\b(drop(s|ped)?( a)? (catch|chance)|dropped|put (him |it )?down|grassed|spill\w*|let ?off|reprieve|missed (a )?(catch|chance))\b",
+            r"\b(drop(s|ped)?( a)? (catch|chance)(es)?|dropped|costl\w* drops?|drops? in ipl|put (him |it )?down|grassed|spill\w*|let ?off|reprieve|missed (a )?(catch|chance))\b",
             re.I,
         ),
     ),
@@ -270,7 +270,14 @@ TYPE_CUES: list[tuple[str, re.Pattern]] = [
         ),
     ),
 ]
-DESC = re.compile(r"\b(highest|biggest|best|largest|most expensive|longest)\b", re.I)
+DESC = re.compile(r"\b(highest|biggest|best|largest|most expensive|costl\w*|longest)\b", re.I)
+MOMENT_TYPES = {
+    "drop",
+    "collapse",
+    "shift",
+    "big_over",
+    "misfield",
+}  # single moments cricbot's tables don't rank
 ASC = re.compile(r"\b(fastest|quickest|earliest|cheapest)\b", re.I)
 CLOSE = re.compile(r"\b(close|thrill\w*|last[- ]ball|tight|nail-?biter|super over)\b", re.I)
 BOWL_ROLE = re.compile(

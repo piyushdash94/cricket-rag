@@ -176,7 +176,7 @@ def make_archive(path) -> None:
         ("bowler_id", "hash(bowler) % 100000"),
     ):
         con.execute(
-            f"alter table balls add column {col} {'boolean' if col.startswith(('is_', 'bowler')) else 'bigint'}"
+            f"alter table balls add column {col} {'boolean' if col.startswith('is_') or col == 'bowler_wicket' else 'bigint'}"
         )
         con.execute(f"update balls set {col} = {expr}")
     con.execute(
@@ -197,6 +197,10 @@ def make_archive(path) -> None:
         "create table cs_bowling_card as select * from (values (1473511::bigint, 1, 'Arshdeep Singh', 3, 40, 24), (1473511, 2, 'Krunal Pandya', 2, 17, 24)) t(match_id, inning, player, wickets, conceded, balls)"
     )
     con.execute("create table cs_awards as select 1473511::bigint match_id, 'Krunal Pandya' player")
+    con.execute(
+        "create table player_styles as select hash('Bhuvneshwar Kumar') % 100000 player_id, 'Bhuvneshwar Kumar' name, "
+        "'right' bat_hand, 'right-arm medium' bowl_style, 'pace' bowl_kind, 'right' bowl_arm, 'espn' source"
+    )
     con.close()
 
 

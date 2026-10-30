@@ -297,7 +297,9 @@ def dominant(cands: list[Player]) -> Player | None:
 
 def link_players(question: str, cat: Catalog, min_typo_involvement: int = 300) -> Linked:
     out = Linked()
-    text = " " + re.sub(r"[^\w'.-]+", " ", question) + " "
+    text = (
+        " " + re.sub(r"[^\w'.-]+", " ", re.sub(r"(\w)['’]s\b", r"\1", question)) + " "
+    )  # "Dhoni's" -> "Dhoni"
     low = text.casefold()
     taken: list[tuple[int, int]] = []
 

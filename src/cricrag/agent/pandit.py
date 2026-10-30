@@ -26,7 +26,7 @@ from cricrag.agent import intent as itn
 from cricrag.agent.llm import GroqClient, LLMUnavailable
 from cricrag.agent.validate import Sources, check, cited, normalise
 from cricrag.entities import Catalog, link_players
-from cricrag.frame import build_frame, find_matches
+from cricrag.frame import PRONOUN, build_frame, find_matches
 from cricrag.retrieval.hybrid import Filters, Retriever
 
 STORY = re.compile(
@@ -83,7 +83,21 @@ def mismatch(question: str, summary: str, players_named: bool = False) -> str | 
         return "scope_single_season"
     if LOW.search(question) and HIGH.search(summary) and not LOW.search(summary):
         return "polarity_high_for_low"
+    if STYLE.search(question):  # cricbot splits spin/pace only; arm and spin type are in the finder's views
+        return "bowling_style_not_in_stats"
     return None
+
+
+BOWLER_VS_BOWLER = re.compile(
+    r"\b(bowler|spinner|pacer|seamer|quick)s?\b[^?]*\bagainst\s+(the\s+)?"
+    r"((left|right)[- ]arm\s+)?(spinners?|pacers?|seamers?|quicks?|fast bowlers?|spin bowl\w*|pace bowl\w*)\b",
+    re.I,
+)
+STYLE = re.compile(
+    r"\b(left|right)[- ]arm\b|\b(orthodox|wrist[- ]?spin\w*|chinaman|leg[- ]?spin\w*|leg[- ]?break\w*|"
+    r"off[- ]?spin\w*|off[- ]?break\w*|googly)\b",
+    re.I,
+)
 
 
 EVENT_OF = {"partnership": "partnership", "hat_tricks": "hattrick", "hundreds": "hundred", "fifties": "fifty",
@@ -102,6 +116,7 @@ WRITER = """You are Pandit, an IPL analyst. Answer the question using only the E
 - For "where did it turn" questions, lead with the line that starts "DECISIVE SHIFT:" and who caused it (don't copy the label).
 - Numbers: only from E, S or M lines, or C headers. Never from commentary BODY text.
 - A VERIFIED ANSWER line is correct: restate its names and numbers first, then add detail only if asked.
+- If a table title states a minimum (e.g. "min 60 balls"), say it with the answer.
 - If the evidence does not answer the question, say exactly what is missing."""
 
 
@@ -183,6 +198,20 @@ class Pandit:
                 t0,
                 mode="refuse",
             )
+        if BOWLER_VS_BOWLER.search(
+            question
+        ):  # a bowler's figures "against left-arm spinners": no such matchup
+            trace.append({"step": "route", "rule": "bowler_against_bowler_type"})
+            return self._done(
+                "Bowlers don't bowl to other bowlers, so I'm not sure what to compare. Did you mean bowlers' "
+                "figures against left- or right-handed batters, or batters' record against that type of bowler?",
+                "clarify",
+                frame,
+                src,
+                trace,
+                t0,
+                mode="clarify",
+            )
         if m := UNSUPPORTED.search(question):
             trace.append({"step": "route", "rule": "unsupported_concept", "term": m.group(0)})
             return self._done(
@@ -250,7 +279,8 @@ class Pandit:
             asked = question
             for typo, fixed in frame.corrected.items():  # the frame already corrected it ("kholi" -> "kohli")
                 asked = re.sub(rf"\b{re.escape(typo)}\b", fixed, asked, flags=re.I)
-            st = self._stats(asked, history, src) if self.root else {"kind": "none"}
+            asked, past = spell_out(asked, frame, history)
+            st = self._stats(asked, past, src) if self.root else {"kind": "none"}
             why = (
                 mismatch(question, st["summary"], bool(link_players(st["summary"], self.cat).players))
                 if st["kind"] == "stats"
@@ -324,6 +354,10 @@ class Pandit:
             return None
         one = matches[0]["match_id"] if len(matches) == 1 else None
         order = itn.routes(it, bool(one), frame)
+        moments = set(ev.event_types(question)) & ev.MOMENT_TYPES
+        if moments and ev.DESC.search(question) and not one and order[0] != "event":
+            order = ["event", *[p for p in order if p != "event"]]  # "costliest drops": rank single moments
+            trace.append({"step": "route", "rule": "moment_ranking_to_events"})
         trace.append({"step": "intent", **it.as_dict(), "routes": order})
         prior, gap_reply, missed = None, None, False
         for prog in order:
@@ -343,12 +377,17 @@ class Pandit:
             abstained = ans.mode == "llm" and ABSTAIN.search(ans.text)
             if not (abstained or (ans.mode == "extractive" and ans.problems)):
                 return ans
+            if prog == "story" and ans.mode == "extractive":  # the match's own facts beat commentary search
+                trace.append({"step": "fallback", "rule": "story_facts_kept"})
+                return ans
             prior = prior or ans
             missed = missed or bool(abstained)
             trace.append(
                 {"step": "fallback", "rule": "writer_abstained" if abstained else "writer_failed_checks"}
             )
-        if missed and "finder" not in order:  # the evidence missed the point: one guarded query before giving up
+        if (
+            missed and "finder" not in order
+        ):  # the evidence missed the point: one guarded query before giving up
             trace.append({"step": "fallback", "rule": "abstained_to_finder"})
             return self._find(question, frame, Sources(), trace, t0, gap_reply, prior, hint=it.as_dict())
         return prior or self._done(gap_reply or GAP, "gap", frame, Sources(), trace, t0, mode="gap")
@@ -372,7 +411,7 @@ class Pandit:
             src.stats["M1"] = {"question": f"match {one}", "reply": " ".join(sheet)}
             return [f"{' '.join(sheet)} [M1]"] if sheet else None
         if prog == "event":
-            types = [t for t in ev.event_types(question) if t != "shift"] or (
+            types = [t for t in ev.event_types(question) if t != "shift" or not one] or (
                 [EVENT_OF[it.measure]] if it.measure in EVENT_OF else []
             )
             return self._event(frame, types, src) if types and self.edb is not None else None
@@ -396,14 +435,17 @@ class Pandit:
         asked = question
         for typo, fixed in frame.corrected.items():
             asked = re.sub(rf"\b{re.escape(typo)}\b", fixed, asked, flags=re.I)
-        st = self._stats(asked, history, src) if self.root else {"kind": "none"}
+        asked, past = spell_out(asked, frame, history)
+        st = self._stats(asked, past, src) if self.root else {"kind": "none"}
         note["kind"] = st["kind"]
         if st["kind"] in ("refuse", "clarify", "gap"):
             return (st["kind"], st.get("reply") or GAP) if st["kind"] != "gap" or st.get("reply") else None
         if st["kind"] != "stats":
             return None
-        why = itn.shape_fits(it, st.get("tables", []), frame, st["facts"]) or mismatch(
-            question, st["summary"], bool(link_players(st["summary"], self.cat).players)
+        why = (
+            itn.shape_fits(it, st.get("tables", []), frame, st["facts"])
+            or mismatch(question, st["summary"], bool(link_players(st["summary"], self.cat).players))
+            or uncovered(frame, st)
         )
         note.update(calls=st.get("calls"), mismatch=why)
         return (
@@ -570,7 +612,11 @@ class Pandit:
             return self._done(
                 "I couldn't find that in the IPL archive.", program, frame, src, trace, t0, mode="empty"
             )
-        extractive = "\n".join(re.sub(r"^(HEADER: |Commentary )", "", ln) for ln in lines[:8])
+        keep = lines[:2] if program == "story" else lines[:8]  # story: the facts sheet and the decisive shift
+        extractive = "\n".join(
+            re.sub(r"^(HEADER: |Commentary )", "", ln).replace("DECISIVE SHIFT: ", "Turning point: ")
+            for ln in keep
+        )
         if not self.llm.available:
             return self._done(extractive, program, frame, src, trace, t0, mode="extractive")
         msgs = [
@@ -631,6 +677,27 @@ class Pandit:
 
 
 TOP_N = re.compile(r"\btop (\d{1,2})\b", re.I)
+
+
+def uncovered(frame, st: dict) -> str | None:
+    """Coverage (rule 5): a player the question names must be in the plan's calls or its result."""
+    seen = (
+        json.dumps(st.get("calls") or [], ensure_ascii=False) + st.get("summary", "") + st.get("facts", "")
+    ).casefold()
+    missing = [p for p in frame.players if p.split()[-1].casefold() not in seen]
+    return "frame_player_not_in_plan" if missing else None
+
+
+def spell_out(asked: str, frame, history):
+    """'how many dots did he bowl?' with the frame's player resolved: name him and drop the history, so cricbot's
+    own follow-up merge can't bring back the previous question's team."""
+    if len(frame.players) != 1 or not PRONOUN.search(asked):
+        return asked, history
+    if frame.players[0].split()[-1].casefold() in asked.casefold():
+        return asked, history
+    name = frame.players[0]
+    out = re.sub(r"\bhis\b", f"{name}'s", asked, flags=re.I)
+    return re.sub(r"\b(he|him|she|her)\b", name, out, flags=re.I), None
 
 
 def cap_rows(facts: str, keep: int = 12) -> str:
