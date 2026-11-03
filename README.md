@@ -106,6 +106,34 @@ runs added afterwards), and Momentum lists the shifts and compares powerplay, mi
 colour themes: Floodlit, Night match, Pitch, Pavilion and Pink ball. Commentary comes from the local archive
 when ESPN's live feed is unavailable.
 
+### Relational graph and the PanditGraph agent
+
+`uv run cricrag export-xi` (once; reads cricbot's Cricsheet JSON) then `uv run cricrag build-graph` writes
+`data/graph.duckdb` from the archive (read-only), the Cricsheet line-ups and the ipl_fielding CSV:
+
+1. **One id per person.** The key is the Cricinfo `player_id`. Cricsheet players missing from its register
+   (negative ids) are merged into a Cricinfo id only when every match they appear in agrees. Fielders named in
+   the fielding CSV are matched only against *that team's XI in that match*; each match records its method
+   (exact, nickname, surname_initials, single_token, fuzzy), and two candidates is `ambiguous` with no id.
+2. **Edge tables**, per season: `bowled_to` (balls, runs, dots, boundaries, dismissals, by phase and teams),
+   `dismissed`, `fielding_dismissal` (c / st / run out with the bowler), `dropped` (audited drops with runs
+   added after), `played_for`. The build fails if any edge total differs from the same count taken from
+   `balls` / `cs_fielding`, or if any bowler's wickets in a match differ from Cricinfo's scorecard.
+
+On the 19-season archive (1,242 played matches, 816 players): 285,606 legal balls, 13,458 bowler wickets and 11,247 fielding
+dismissals all match the archive exactly; 0 of 14,694 bowler-match wicket counts differ from the scorecard;
+2,557 of 2,558 named fielding events resolve to a player (the one left names a batting-side player).
+
+**PanditGraph** (`agent/graph_agent.py`, LangGraph) is now the default agent (`AGENT=graph`): named rules send
+relational questions (nemesis, favourite victim, head-to-head, catch pairs, drops off a bowler, teammates, how two
+players are linked, network rank) to one templated graph tool, and everything else to Pandit unchanged (stats from
+DuckDB, narrative from LanceDB). The writer cites `[G#]` lines; numbers or names outside the evidence get one retry,
+then the evidence itself is shown. Relational answers carry the subgraph, drawn as a card in the chat.
+
+The **Network** tab in the UI has a rivalry explorer (one player's nemeses, victims, catch partners and teammates),
+a fielding web (a team's fielder → bowler catches or drops), network rankings, teammate communities and the build
+checks. `uv run cricrag graph-explore` prints the same views. Rankings are PageRank heuristics, not stats.
+
 Other commands: `cricrag frame "<question>"` (what the code extracted), `cricrag search`, `cricrag news`,
 `cricrag eval-pandit --suite v3|events`, `cricrag eval-routes --mode plan|full`, `cricrag eval-retrieval`.
 The scripts in `scripts/eval/` re-run the public-question tests above; `scripts/groq_quota.py` shows how much
@@ -119,6 +147,8 @@ src/cricrag/
   agent/intent.py           intent form, route table, shape check
   agent/pandit.py           router and programs, writer, fallbacks
   agent/validate.py         citation, number and name checks
+  agent/graph_agent.py      PanditGraph: LangGraph router with the relational branch, then Pandit
+  graph/                    canonical player ids, edge tables, graph tools, NetworkX views, /api/graph
   agent/llm.py              Groq client: model fallback, disk cache, rate-limit waits
   cricbot.py                cricbot's verified stats path, run in-process
   events.py, momentum.py    events table; momentum detector (ported from cricbot)
@@ -132,7 +162,7 @@ src/cricrag/
 evals/                      routing labels and results
 scripts/eval/               public-question test runs
 docs/                       pipeline image, original plan
-frontend/ui/                match centre UI (React, vinext), ported from cricbot
+frontend/ui/                match centre UI (React, vinext), ported from cricbot; app/network.tsx is the Network tab
 Rules.md                    project rules (numbers from SQL only, never tune on held-out data, …)
 ```
 

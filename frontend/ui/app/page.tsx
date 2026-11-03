@@ -6,6 +6,8 @@ import { ClarifyChatCard, ScopeChatCard, StatsChatCard, StatsPanel } from "./sta
 import type { StatsCard, ClarifyCard, ScopeCard } from "./stats";
 import { OverChart, PartnershipChart, PhaseChart, PitchCard, usePar, Worm } from "./match-charts";
 import { FrontPage } from "./home";
+import { GraphChatCard, NetworkPanel } from "./network";
+import type { GraphCard } from "./network";
 import type { News } from "./home";
 import type { Partnership } from "./match-charts";
 
@@ -92,7 +94,7 @@ type MatchCard = {
   coverage: { level: string; label: string }; consistency: { status: string; note: string }; ball_count: number; commentary_count: number;
 };
 type ListCard = { type: "match_list"; title: string; matches: { title: string; subtitle: string; meta: string; date: string; label: string; series_slug: string; match_slug: string }[] };
-type ChatCard = MatchCard | ListCard | StatsCard | ClarifyCard | ScopeCard;
+type ChatCard = MatchCard | ListCard | StatsCard | ClarifyCard | ScopeCard | GraphCard;
 type ChatMessage = { role: "user" | "assistant"; content: string; cards?: ChatCard[]; via?: string };
 type GraphNode = { id: string; label: string; kind: string; description: string };
 type AgentGraph = { name: string; version: string; framework: string; nodes: GraphNode[]; edges: { from: string; to: string; condition?: string }[] };
@@ -245,7 +247,9 @@ export default function Home() {
   const [mobileView, setMobileView] = useState<"chat" | "matches" | "match" | "stats">("matches");
   // Stats opens the workspace on demand (like a match does); it can sit over an open match.
   const [showStats, setShowStats] = useState(false);
-  const openStats = useCallback(() => { setShowStats(true); setMobileView("stats"); }, []);
+  const [showNetwork, setShowNetwork] = useState(false);
+  const openStats = useCallback(() => { setShowNetwork(false); setShowStats(true); setMobileView("stats"); }, []);
+  const openNetwork = useCallback(() => { setShowStats(false); setShowNetwork(true); setMobileView("stats"); }, []);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -503,12 +507,13 @@ export default function Home() {
     : [`Tell me about the ${season} final`, `Most sixes in IPL ${season}`, "Kohli chasing vs batting first", "Who are the best finishers in the IPL?"];
 
   return (
-    <div className={`app ${dark ? "dark" : "light"} theme-${theme} view-${mobileView}${selected ? " has-match" : ""}${showStats ? " stats-open" : ""}${!selected && !showStats ? " home-open" : ""}`}>
+    <div className={`app ${dark ? "dark" : "light"} theme-${theme} view-${mobileView}${selected ? " has-match" : ""}${showStats || showNetwork ? " stats-open" : ""}${!selected && !showStats && !showNetwork ? " home-open" : ""}`}>
       <header className="topbar">
-        <button className="brand" onClick={() => { if (selected) closeMatch(); setShowStats(false); setMobileView("matches"); }} aria-label="cricket-rag front page"><span className="brand-mark" /><span>cricket<span>rag</span></span></button>
+        <button className="brand" onClick={() => { if (selected) closeMatch(); setShowStats(false); setShowNetwork(false); setMobileView("matches"); }} aria-label="cricket-rag front page"><span className="brand-mark" /><span>cricket<span>rag</span></span></button>
         <nav className="topnav" aria-label="Main">
-          <button className={!showStats ? "active" : ""} onClick={() => { setShowStats(false); setMobileView(selected ? "match" : "matches"); }}>Match centre</button>
+          <button className={!showStats && !showNetwork ? "active" : ""} onClick={() => { setShowStats(false); setShowNetwork(false); setMobileView(selected ? "match" : "matches"); }}>Match centre</button>
           <button className={showStats ? "active" : ""} onClick={openStats} aria-label="Open IPL stats">Stats</button>
+          <button className={showNetwork ? "active" : ""} onClick={openNetwork} aria-label="Open the relational graph">Network</button>
           <button onClick={() => setDocsOpen(true)} aria-label="Open documentation">Docs</button>
         </nav>
         <details className="theme-picker" ref={themeMenu}>
@@ -558,6 +563,8 @@ export default function Home() {
                   ? <StatsChatCard key={cardIndex} card={card} onOpenStats={openStats} />
                   : card.type === "clarify"
                     ? <ClarifyChatCard key={cardIndex} card={card} disabled={chatLoading} onAsk={(question) => void sendChat(undefined, question)} />
+                    : card.type === "graph"
+                    ? <GraphChatCard key={cardIndex} card={card} onOpen={openNetwork} />
                     : card.type === "scope"
                       ? <ScopeChatCard key={cardIndex} card={card} disabled={chatLoading} onAsk={(question) => void sendChat(undefined, question)} />
                       : <ListChatCard key={cardIndex} card={card} onOpen={(item) => openBySlugs(item.series_slug, item.match_slug)} />)}
@@ -578,12 +585,14 @@ export default function Home() {
         {showStats && <StatsPanel season={season} seasons={seasons} matchOpen={Boolean(selected)}
           onBackToMatch={() => { setShowStats(false); setMobileView("match"); }}
           onClose={() => { setShowStats(false); setMobileView("chat"); }} />}
-        {!selected && !showStats && <div className="workspace-body fp-body"><FrontPage season={season} onSeason={setSeason} news={news}
+        {showNetwork && <NetworkPanel onClose={() => { setShowNetwork(false); setMobileView("chat"); }}
+          onAsk={(question) => { setMobileView("chat"); void sendChat(undefined, question); }} />}
+        {!selected && !showStats && !showNetwork && <div className="workspace-body fp-body"><FrontPage season={season} onSeason={setSeason} news={news}
           onOpen={(ref) => { if (ref.series_slug && ref.match_slug) openBySlugs(ref.series_slug, ref.match_slug); }}
           onAsk={(question) => { setMobileView("chat"); void sendChat(undefined, question); }}
           onChat={() => setMobileView("chat")}
           hall={<HallOfFamePanel hall={hall} offline={Boolean(archiveError)} />} /></div>}
-        {selected && !showStats && <>
+        {selected && !showStats && !showNetwork && <>
           <div className="match-hero">
             <div className="hero-actions"><button className="back-link" onClick={closeMatch}>← Close</button><button className="share-button" onClick={shareMatch}>Copy summary + link</button></div>
             <div className="match-meta"><span>{selected.series_name}{selected.label && selected.label !== "Match" ? ` · ${selected.label}` : ""}</span><span>{formatDate(selected.date)}</span><span>{selected.venue}</span></div>

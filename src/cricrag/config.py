@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     cricbot_db: Path | None = None
     cricbot_api: str = "http://127.0.0.1:8000"
     fielding_events: Path | None = None
+    cricsheet_xi: Path | None = None  # from `cricrag export-xi`; default data/cricsheet_xi.csv
+    cricsheet_register: Path | None = (
+        None  # Cricsheet people.csv; default cricbot's data/cricsheet_people.csv
+    )
 
     data_dir: Path = Path("data")
     embed_model: str = "BAAI/bge-small-en-v1.5"
@@ -41,6 +45,7 @@ class Settings(BaseSettings):
         "openai/gpt-oss-20b,qwen/qwen3.8-27b,openai/gpt-oss-120b"  # small form-filling call
     )
     router: str = "intent"  # intent | rules
+    agent: str = "graph"  # graph (LangGraph: relational branch + Pandit) | pandit
     groq_max_wait: float = 20.0  # seconds to wait on a 429 before trying the next model (raise for eval runs)
 
     @property
@@ -63,6 +68,20 @@ class Settings(BaseSettings):
     @property
     def events_db(self) -> Path:
         return self.data_dir / "events.duckdb"
+
+    @property
+    def graph_db(self) -> Path:
+        return self.data_dir / "graph.duckdb"
+
+    @property
+    def xi_csv(self) -> Path:
+        return self.cricsheet_xi or self.data_dir / "cricsheet_xi.csv"
+
+    @property
+    def register_csv(self) -> Path | None:
+        if self.cricsheet_register:
+            return self.cricsheet_register
+        return self.db_path.parent / "cricsheet_people.csv"
 
     @property
     def cache_dir(self) -> Path:
