@@ -340,7 +340,15 @@ def ranking(con, kind: str = "bowler", seasons=None, top: int = 10) -> Evidence:
     fn = gx.bowler_rank if kind == "bowler" else gx.batter_rank
     rows = fn(con, seasons, top=top)
     what = "wickets" if kind == "bowler" else "runs"
-    ev = Evidence("ranking", title=f"Network rank of {kind}s (PageRank heuristic, not an official stat)")
+    least = gx.qualify(seasons, None)
+    ev = Evidence(
+        "ranking",
+        title=f"Network rank of {kind}s, min {least} balls (PageRank heuristic, not an official stat)",
+    )
+    if rows:
+        ev.add(
+            f"Network ranking of {kind}s {_scope(seasons)}, minimum {least} balls (PageRank heuristic, not an official stat)"
+        )
     for i, (name, score, n) in enumerate(rows, 1):
         ev.add(f"#{i} {name}: network score {score} ({n} {what} {_scope(seasons)})",
                dict(rank=i, player=name, score=score, **{what: n}))  # fmt: skip

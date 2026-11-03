@@ -563,7 +563,9 @@ def create_app(make_agent: Callable[[], Any] | None = None) -> FastAPI:
         if found := re.search(r"(\d+)$", match_slug):
             with contextlib.suppress(Exception):  # cricbot's page still shows without the extras
                 enrich_match(detail, int(found.group(1)))
-        return detail
+        from cricrag.matchpage import cap_commentary
+
+        return cap_commentary(detail)  # outside the suppress: always applied, even if enrich failed
 
     @app.get("/api/home")
     def home(season: int = 2025):

@@ -392,14 +392,14 @@ code { font:12px var(--font-geist-mono); }
   .app,.app.has-match,.app.stats-open { grid-template-columns:1fr; padding-bottom:56px; }
   .rail,.chat { grid-row:3; grid-column:1; }
   .topnav { display:none; }
-  .app.view-match .ticker,.app.view-stats .ticker { display:none; }
+  .app.view-match .ticker,.app.view-stats .ticker,.app.view-chat .ticker { display:none; }  /* the chat gets the whole phone screen */
   .topbar { justify-content:space-between; }
   .partnership-row { grid-template-columns:30px 1fr 64px; }
   .partnership-row .track { grid-column:1/-1; grid-row:2; }
   .app.view-chat .rail,.app.view-matches .chat,.app.view-match .rail,.app.view-stats .rail { display:none; }
   .app.view-match .chat,.app.view-stats .chat { visibility:hidden; }
   .workspace { inset:0 0 56px 0; width:100%; }
-  .mobile-nav { position:fixed; inset:auto 0 0; z-index:50; height:56px; display:grid; grid-template-columns:repeat(4,1fr); border-top:1px solid var(--line2); background:var(--panel); }
+  .mobile-nav { position:fixed; inset:auto 0 0; z-index:50; height:56px; display:grid; grid-template-columns:repeat(5,1fr); border-top:1px solid var(--line2); background:var(--panel); }
   .mobile-nav button { border:0; background:none; color:var(--muted); font-size:13px; font-weight:700; }
   .mobile-nav button.active { color:var(--accent); box-shadow:inset 0 2px var(--accent); }
   .mobile-nav button:disabled { opacity:.35; }
@@ -787,7 +787,7 @@ code { font:12px var(--font-geist-mono); }
 .net-search input,.net-search select { height:34px; padding:0 10px; border:1px solid var(--line2); border-radius:8px; background:var(--panel); color:var(--ink); }
 .net-search input { flex:1; min-width:160px; }
 .net-search>button,.net-ask { height:34px; padding:0 12px; border:1px solid var(--accent); border-radius:8px; background:var(--accent); color:var(--on-accent); font-weight:700; }
-.net-ask { height:28px; font-size:12px; background:var(--panel2); color:var(--accent); }
+.net-ask { flex:none; height:28px; white-space:nowrap; font-size:12px; background:var(--panel2); color:var(--accent); }
 .seg { display:inline-flex; border:1px solid var(--line2); border-radius:8px; overflow:hidden; }
 .seg button { padding:7px 12px; border:0; background:var(--panel); font-size:12px; font-weight:700; color:var(--muted); }
 .seg button.active { background:var(--accent); color:var(--on-accent); }
@@ -810,3 +810,18 @@ code { font:12px var(--font-geist-mono); }
 .net-card .net-svg { max-height:340px; }
 .net-card .net-label { font-size:15px; }
 .net-card .net-edge-label { font-size:13px; }
+
+/* ------------------------------------------------------------ front page: the season's network */
+.fp-head-row { display:flex; align-items:flex-end; justify-content:space-between; gap:16px; }
+.fp-link { flex:none; padding:8px 12px; border:1px solid var(--line2); border-radius:8px; background:var(--panel); color:var(--accent); font-size:13px; font-weight:700; }
+.fp-link:hover { border-color:var(--accent); }
+.fp-net-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.15fr); gap:14px; }
+.fp-net-card { min-width:0; padding:14px 16px; display:grid; align-content:start; gap:10px; border:1px solid var(--line); border-radius:12px; background:var(--panel); }
+.fp-net-card .net-svg { max-height:230px; }
+.fp-net-skeleton { height:150px; border-radius:8px; background:linear-gradient(90deg,var(--panel2),var(--line),var(--panel2)); background-size:200% 100%; animation:fpshimmer 1.4s infinite linear; }
+@keyframes fpshimmer { to { background-position:-200% 0; } }
+.net-rank.compact li { grid-template-columns:18px minmax(96px,1.2fr) 1fr 48px 52px; font-size:12.5px; }
+@media (max-width:900px) { .fp-net-grid { grid-template-columns:1fr; } .fp-head-row { align-items:flex-start; flex-direction:column; } }
+@media (prefers-reduced-motion:reduce) { .fp-net-skeleton { animation:none; } }
+.fp-net-card .net-label { font-size:16px; }
+.fp-net-card .net-col { font-size:11px; }

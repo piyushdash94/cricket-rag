@@ -174,3 +174,22 @@ def test_front_page_for_a_season(archive):
     assert page["orange_cap"]["value"] >= 1 and page["highest"]["team"] in ("RCB", "PBKS")
     assert [e["year"] for e in eras(con)] == [2021, 2025]
     assert season_home(con, 1999) == {"year": 1999, "available": False}
+
+
+def test_match_page_never_sends_a_live_blog(client, monkeypatch):
+    """ESPN's postText on a match's last ball is the whole post-match blog: the page gets a short snippet."""
+    from test_snippets import BLOG
+
+    class Pages:
+        def get_match_detail(self, series, match):
+            ball = {"inning": 2, "label": "19.6", "event": "1", "title": "Kumar to Shashank",
+                    "text": "full toss, slapped to long-on. " + BLOG, "commentary": BLOG}  # fmt: skip
+            return {"balls": [ball], "analytics": {"shifts": []}, "match": {}}
+
+    monkeypatch.setattr(server, "archive", lambda root: (Pages(), None, None))
+    monkeypatch.setattr(server.settings(), "cricbot_root", "x")
+    app = server.create_app(lambda: None)
+    detail = TestClient(app).get("/api/ipl/matches/ipl-2025-1/rcb-vs-pbks-final-1473511").json()
+    ball = detail["balls"][0]
+    assert len(ball["text"]) <= 301 and len(ball["commentary"]) <= 301
+    assert "<" not in ball["text"] + ball["commentary"] and "twitter" not in ball["commentary"]

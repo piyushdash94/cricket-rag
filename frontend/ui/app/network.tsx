@@ -48,14 +48,21 @@ function edgeTitle(e: GraphEdge, name: (id: number) => string): string {
 
 /** Radial ego network: the centre player in the middle, neighbours on a ring, width = weight. */
 export function GraphView({ nodes, edges, height = 300, chain = false }: { nodes: GraphNode[]; edges: GraphEdge[]; height?: number; chain?: boolean }) {
-  const W = 460, H = height, cx = W / 2, cy = H / 2, R = Math.min(W, H) / 2 - 46;
+  const W = 460, H = height, cx = W / 2, cy = H / 2, R = Math.min(W, H) / 2 - 46; // R: the two-player layout
   const center = chain ? undefined : nodes.find((n) => n.center) ?? (nodes.length === 2 ? undefined : nodes[0]);
   const ring = nodes.filter((n) => n !== center);
   const pos = new Map<number, { x: number; y: number }>();
   if (center) pos.set(center.id, { x: cx, y: cy });
   if (chain) nodes.forEach((n, i) => pos.set(n.id, { x: 50 + (i * (W - 100)) / Math.max(nodes.length - 1, 1), y: cy + (i % 2 ? -30 : 30) }));
   else if (!center && ring.length === 2) { pos.set(ring[0].id, { x: cx - R, y: cy }); pos.set(ring[1].id, { x: cx + R, y: cy }); }
-  else ring.forEach((n, i) => { const a = -Math.PI / 2 + (2 * Math.PI * i) / Math.max(ring.length, 1); pos.set(n.id, { x: cx + R * Math.cos(a), y: cy + R * Math.sin(a) }); });
+  // Ring nodes sit on an ellipse that leaves room at the sides for names, which point away from the centre.
+  const RX = W / 2 - 120, RY = H / 2 - 30;
+  const angle = new Map<number, number>();
+  if (!chain && !(!center && ring.length === 2)) ring.forEach((n, i) => {
+    const a = -Math.PI / 2 + (2 * Math.PI * i) / Math.max(ring.length, 1);
+    angle.set(n.id, a);
+    pos.set(n.id, { x: cx + RX * Math.cos(a), y: cy + RY * Math.sin(a) });
+  });
   const max = Math.max(1, ...edges.map(weight));
   const name = (id: number) => nodes.find((n) => n.id === id)?.label ?? String(id);
   return <svg className="net-svg" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Relationship graph">
@@ -76,13 +83,19 @@ export function GraphView({ nodes, edges, height = 300, chain = false }: { nodes
     {nodes.map((n) => { const p = pos.get(n.id); if (!p) return null; const big = n === center;
       return <g key={n.id} transform={`translate(${p.x},${p.y})`}>
         <circle r={big ? 13 : 8} fill={ROLE_COLOR[n.role] ?? "var(--accent)"} className="net-node" />
-        <text y={big ? 28 : 21} className={`net-label${big ? " center" : ""}`}>{n.label}</text>
+        {(() => {
+          const a = angle.get(n.id);
+          if (big || a === undefined) return <text y={big ? 28 : 21} className={`net-label${big ? " center" : ""}`}>{n.label}</text>;
+          const c = Math.cos(a), sn = Math.sin(a);
+          if (Math.abs(c) < 0.35) return <text y={sn < 0 ? -13 : 22} className="net-label">{n.label}</text>; // top / bottom
+          return <text x={c > 0 ? 13 : -13} y={4} className={`net-label ${c > 0 ? "right" : "left"}`}>{n.label}</text>;
+        })()}
       </g>; })}
   </svg>;
 }
 
 /** Two columns: fielders (left) to bowlers (right); width = dismissals (or drops). */
-function Bipartite({ edges, nodes, metric }: { edges: GraphEdge[]; nodes: GraphNode[]; metric: "dismissals" | "drops" }) {
+export function Bipartite({ edges, nodes, metric }: { edges: GraphEdge[]; nodes: GraphNode[]; metric: "dismissals" | "drops" }) {
   const left = [...new Set(edges.map((e) => e.source))], right = [...new Set(edges.map((e) => e.target))];
   const row = 26, H = Math.max(left.length, right.length) * row + 30, W = 460, lx = 150, rx = 310;
   const name = (id: number) => nodes.find((n) => n.id === id)?.label ?? String(id);
@@ -250,4 +263,44 @@ function askFor(sec: GraphPayload, name: string, season: string): string {
   if (sec.tool === "bunnies") return `Who is ${name}'s favourite victim${s}?`;
   if (sec.tool === "teammates") return `Who has ${name} played with the most${s}?`;
   return `Which fielder-bowler pairs involve ${name}${s}?`;
+}
+
+type RankRow = { player: string; score: number; wickets?: number };
+
+/** Front page: one season's network in two small, read-only charts, with a way into the Network tab. */
+export function SeasonNetwork({ season, onOpen }: { season: number; onOpen: () => void }) {
+  const [ranks, setRanks] = useState<{ rows: RankRow[]; min_balls: number } | null>(null);
+  const [pairs, setPairs] = useState<GraphPayload | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let live = true;
+    Promise.all([
+      get<{ rows: RankRow[]; min_balls: number }>(`/api/graph/rankings?kind=bowler&year=${season}&top=5`),
+      get<GraphPayload>(`/api/graph/pairs?year=${season}&top=5`),
+    ]).then(([r, p]) => { if (live) { setRanks(r); setPairs(p); setFailed(false); } })
+      .catch(() => { if (live) setFailed(true); });
+    return () => { live = false; };
+  }, [season]);
+  if (failed) return null; // no graph built: the front page simply has no network section
+  const max = Math.max(1, ...(ranks?.rows ?? []).map((r) => r.score));
+  return <section className="fp-section fp-network" aria-label={`IPL ${season} player network`}>
+    <div className="fp-head fp-head-row">
+      <div><h3>The network</h3><p>Who dismissed whom in {season}, read as a graph: bowlers ranked by whose wickets they took, and the catches that linked fielders to bowlers.</p></div>
+      <button className="fp-link" onClick={onOpen}>Open the network →</button>
+    </div>
+    <div className="fp-net-grid">
+      <article className="fp-net-card">
+        <p className="section-kicker">NETWORK RANK · BOWLERS</p>
+        {ranks ? <ol className="net-rank compact">{ranks.rows.map((r) => <li key={r.player}>
+          <span>{r.player}</span><i style={{ width: `${(100 * r.score) / max}%` }} /><b>{r.score}</b><small>{r.wickets} wkts</small></li>)}</ol>
+          : <div className="fp-net-skeleton" />}
+        <p className="stats-note">PageRank on the dismissal graph, min {ranks?.min_balls ?? 120} balls. A heuristic, not an official stat.</p>
+      </article>
+      <article className="fp-net-card">
+        <p className="section-kicker">CATCHING PAIRS · C / ST X B Y</p>
+        {pairs ? (pairs.gap ? <p className="stats-note">{pairs.gap}</p> : <Bipartite edges={pairs.edges} nodes={pairs.nodes} metric="dismissals" />)
+          : <div className="fp-net-skeleton" />}
+      </article>
+    </div>
+  </section>;
 }

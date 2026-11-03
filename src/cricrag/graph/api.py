@@ -27,7 +27,13 @@ def router(db_path: Callable[[], Path]) -> APIRouter:
             state["con"], state["path"] = duckdb.connect(str(path), read_only=True), str(path)
         return state["con"]
 
-    def seasons(season: str | None) -> list[str] | None:
+    def seasons(season: str | None, year: int | None = None) -> list[str] | None:
+        """An archive season ('2007/08'), or the IPL year the front page uses (2008)."""
+        if year is not None and not season:
+            row = con().execute("SELECT season FROM season_years WHERE year = ?", [year]).fetchone()
+            if not row:
+                raise HTTPException(404, f"no IPL season {year} in the graph")
+            return [row[0]]
         return [season] if season else None
 
     @r.get("/status")
@@ -90,15 +96,29 @@ def router(db_path: Callable[[], Path]) -> APIRouter:
                     "drops": drops.as_payload() | {"gap": drops.gap}}  # fmt: skip
 
     @r.get("/rankings")
-    def rankings(kind: str = "bowler", season: str | None = None, top: int = 15):
+    def rankings(kind: str = "bowler", season: str | None = None, year: int | None = None, top: int = 15):
         if kind not in ("bowler", "batter"):
             raise HTTPException(400, "kind is bowler or batter")
         with lock:
             fn = gx.bowler_rank if kind == "bowler" else gx.batter_rank
             what = "wickets" if kind == "bowler" else "runs"
-            rows = fn(con(), seasons(season), top=min(top, 50))
-            return {"kind": kind, "season": season, "note": "PageRank heuristic, not an official stat",
+            picked = seasons(season, year)
+            rows = fn(con(), picked, top=min(top, 50))
+            return {"kind": kind, "season": picked[0] if picked else None, "min_balls": gx.qualify(picked, None),
+                    "note": f"PageRank heuristic, not an official stat; min {gx.qualify(picked, None)} balls",
                     "rows": [{"player": n, "score": s, what: v} for n, s, v in rows]}  # fmt: skip
+
+    @r.get("/pairs")
+    def pairs(season: str | None = None, year: int | None = None, top: int = 6):
+        """The league's caught / stumped fielder-bowler pairs (the front page's catching web)."""
+        with lock:
+            picked = seasons(season, year)
+            ev = gt.catch_pairs(con(), seasons=picked, top=min(top, 25))
+            return ev.as_payload() | {
+                "gap": ev.gap,
+                "lines": ev.lines,
+                "season": picked[0] if picked else None,
+            }
 
     @r.get("/communities")
     def communities(season: str | None = None):

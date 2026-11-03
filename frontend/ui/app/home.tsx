@@ -6,6 +6,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
+import { SeasonNetwork } from "./network";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -45,9 +46,9 @@ const teamName = (code: string | undefined, year: number) => (code && TEAMS[code
 const num = (value?: number) => (value ?? 0).toLocaleString("en-IN");
 const day = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 
-export function FrontPage({ season, onSeason, onOpen, onAsk, onChat, news, hall }: {
+export function FrontPage({ season, onSeason, onOpen, onAsk, onChat, onNetwork, news, hall }: {
   season: number; onSeason: (year: number) => void; onOpen: (ref: Ref) => void; onAsk: (question: string) => void;
-  onChat: () => void; news: News | null; hall: ReactNode;
+  onChat: () => void; onNetwork?: () => void; news: News | null; hall: ReactNode;
 }) {
   const [data, setData] = useState<HomeData | null>(null);
   const [failed, setFailed] = useState(false);
@@ -103,6 +104,8 @@ export function FrontPage({ season, onSeason, onOpen, onAsk, onChat, news, hall 
         <Cap tone="purple" label="Purple cap" leader={page.purple_cap} unit="wickets" />
         <Cap tone="six" label="Most sixes" leader={page.most_sixes} unit="sixes" />
       </section>
+
+      {onNetwork && <SeasonNetwork season={season} onOpen={onNetwork} />}
 
       {(page.thrillers?.length ?? 0) > 0 && <section className="fp-section">
         <div className="fp-head"><h3>Closest finishes</h3><p>Ties, wins by five runs or fewer, and chases won with one ball or none to spare.</p></div>

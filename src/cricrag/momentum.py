@@ -207,7 +207,11 @@ def innings_shifts(
                         **window,
                         "favours": batting if swing > 0 else bowling,
                         "magnitude": abs(swing),
-                        "headline": f"{window['runs']} runs and {window['wickets']} wicket{'s' if window['wickets'] != 1 else ''} when {round(par)} were needed at {round(required, 2)} an over",
+                        # needed = target - score at the start (not `par`, the share of it due in these overs)
+                        "headline": f"{window['runs']} runs and {window['wickets']} wicket{'s' if window['wickets'] != 1 else ''} when {needed} were needed off {remaining} balls ({round(required, 2)} an over; par for these {window['balls']} balls {round(par)})",
+                        "needed_before": needed,
+                        "balls_left_before": remaining,
+                        "par": round(par, 1),
                         "required_rate_before": round(required, 2),
                         "required_rate_after": required_after,
                     }
