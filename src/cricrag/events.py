@@ -85,7 +85,7 @@ OVERS = """
 CREATE OR REPLACE TEMP VIEW o AS
 SELECT match_id, inning, over_number, any_value(season) AS season, any_value(yr) AS yr, any_value(dt) AS dt,
   any_value(stage) AS stage, any_value(title) AS title, max(over_label) AS over_label, any_value(bat) AS bat,
-  any_value(bowl) AS bowl, any_value(phase) AS phase, string_agg(DISTINCT bowler, ', ') AS bowler,
+  any_value(bowl) AS bowl, any_value(phase) AS phase, string_agg(DISTINCT bowler, ', ' ORDER BY bowler) AS bowler,
   sum(runs_total) AS runs, sum(charged) AS charged, sum(is_legal::INT) AS legal, sum(bowler_wicket::INT) AS bw,
   max_by(cr, sequence) AS cr, max_by(cw, sequence) AS cw
 FROM b GROUP BY match_id, inning, over_number
@@ -94,7 +94,7 @@ SQL = {
     "wicket": f"""SELECT 'wicket', {CB}, b.player_out, CASE WHEN b.bowler_wicket THEN b.bowler END, f.fielder,
         lower(b.dismissal_type), CASE WHEN b.batter = b.player_out THEN br END, CASE WHEN b.batter = b.player_out THEN bb END, {TAILB}
         FROM b LEFT JOIN cb.cs_fielding f ON f.match_id = b.match_id AND f.inning = b.inning AND f.player_out_id = b.player_out_id
-        WHERE b.is_wicket QUALIFY row_number() OVER (PARTITION BY b.match_id, b.inning, b.sequence) = 1""",
+        WHERE b.is_wicket QUALIFY row_number() OVER (PARTITION BY b.match_id, b.inning, b.sequence ORDER BY f.fielder NULLS LAST) = 1""",
     "milestone": f"""SELECT CASE WHEN br >= 100 THEN 'hundred' ELSE 'fifty' END, {C}, batter, bowler, NULL,
         CASE WHEN br >= 100 THEN '100' ELSE '50' END, bb, fin, {TAIL}
         FROM (SELECT *, lag(br, 1, 0) OVER p AS prev, max(br) OVER (PARTITION BY match_id, inning, batter) AS fin
@@ -111,7 +111,7 @@ SQL = {
     "maiden": f"""SELECT 'maiden', {C}, bowler, NULL, NULL, NULL, bw, NULL, {TAIL} FROM o WHERE charged = 0 AND legal >= 6""",
     "big_over": f"""SELECT 'big_over', {C}, bowler, NULL, NULL, NULL, runs, bw, {TAIL} FROM o WHERE runs >= 20""",
     "partnership": """SELECT 'partnership', match_id, any_value(season), any_value(yr), any_value(dt), any_value(stage),
-        any_value(title), inning, max(over_number), max(over_label), any_value(bat), any_value(bowl), any_value(phase),
+        any_value(title), inning, max(over_number), max(over_label), any_value(bat), any_value(bowl), max_by(phase, sequence),
         min(batter), max(batter), NULL, CAST(wb + 1 AS VARCHAR), sum(runs_total), sum((NOT is_wide)::INT),
         max_by(cr, sequence) || '/' || max_by(cw, sequence), NULL, NULL, false, match_id || ':' || inning || ':' || max(over_number)
         FROM (SELECT *, cw - is_wicket::INT AS wb FROM b) GROUP BY match_id, inning, wb HAVING sum(runs_total) >= 50""",
@@ -334,6 +334,8 @@ def query(con, frame: Frame, types: list[str], limit: int = 8) -> tuple[list[dic
         if ASC.search(frame.question)
         else "date DESC, inning, over"
     )
+    # ties (two 17-ball fifties) break on a fixed key, so a rebuilt events table gives the same evidence
+    order += ", date, match_id, inning, over, label, type, player"
     w = " AND ".join(where)
     total = con.execute(f"SELECT count(*) FROM events WHERE {w}", params).fetchall()[0][0]
     cur = con.execute(f"SELECT * FROM events WHERE {w} ORDER BY {order} LIMIT {int(limit)}", params)
