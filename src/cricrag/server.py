@@ -56,6 +56,12 @@ NODES = [
         "story, event, stats, match, counts, team phase, fielding, search or finder.",
     ),
     ("shape", "Shape check", "validation", "A result keyed by the wrong unit moves on to the next program."),
+    (
+        "relational",
+        "Relational graph",
+        "tool",
+        "Relational branch: nemesis, head-to-head, catch pairs, drops, teammates, links, network rank.",
+    ),
     ("write", "Writer", "model", "One LLM call writes up to five cited sentences from the evidence card."),
     (
         "validate",
@@ -78,6 +84,8 @@ EDGES = [
     ("write", "validate", None),
     ("validate", "write", "problems: one retry"),
     ("validate", "finalize", None),
+    ("frame", "relational", "relational cue (named rule)"),
+    ("relational", "write", None),
 ]
 LABELS = {node: label for node, label, *_ in NODES}
 KINDS = {node: kind for node, _, kind, _ in NODES}
@@ -105,6 +113,8 @@ def node_of(step: dict[str, Any]) -> str:
         return "intent"
     if name == "try" and step.get("mismatch"):
         return "shape"
+    if name in ("relational", "relational_route"):
+        return "relational" if name == "relational" or step.get("program") != "pandit" else "checks"
     if name == "validate":
         return "validate"
     if name == "llm_unavailable":
@@ -258,6 +268,8 @@ def result_of(ans, question: str, root: str | None) -> dict[str, Any]:
     if ans.program == "stats" and ans.sources.tables:
         calls = next((s.get("calls") or [] for s in reversed(ans.trace) if s.get("calls")), [])
         cards.append(stats_card(question, ans.sources.tables, calls))
+    if (g := getattr(ans, "extra", {}).get("graph")) and g.get("nodes"):
+        cards.append({"type": "graph", "title": g["title"], **g})
     if ans.mode == "clarify" and (card := clarify_card(question, ans.frame)):
         cards.append(card)
     # A story or single-match answer opens that match beside the chat.
@@ -486,9 +498,9 @@ def create_app(make_agent: Callable[[], Any] | None = None) -> FastAPI:
                 if make_agent:
                     state["agent"] = make_agent()
                 else:
-                    from cricrag.cli import pandit
+                    from cricrag.cli import agent as make
 
-                    state["agent"] = pandit()[0]
+                    state["agent"] = make()[0]
             return state["agent"]
 
     def cricbot_archive():
@@ -596,6 +608,10 @@ def create_app(make_agent: Callable[[], Any] | None = None) -> FastAPI:
     @app.get("/api/docs/catalog")
     def catalog():
         return docs_catalog()
+
+    from cricrag.graph.api import router as graph_router
+
+    app.include_router(graph_router(lambda: s.graph_db))
 
     @app.get("/api/agent/graph")
     def agent_graph():

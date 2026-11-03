@@ -15,10 +15,13 @@ Rules, in the spirit of entities.py:
 
 from __future__ import annotations
 
+import csv
+import json
 import re
 import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from rapidfuzz import fuzz
 from rapidfuzz.distance import DamerauLevenshtein
@@ -167,9 +170,69 @@ GROUP BY 1, 2
 """
 
 
+def team_code(full: str) -> str | None:
+    """'Kings XI Punjab' -> 'PBKS' (Cricsheet writes full franchise names)."""
+    from cricrag.entities import TEAM_NAMES, canon
+
+    code = TEAM_NAMES.get(full.casefold().strip())
+    if code is None and full.casefold().rstrip("s") + "s" in TEAM_NAMES:  # 'Rising Pune Supergiant'
+        code = TEAM_NAMES[full.casefold().rstrip("s") + "s"]
+    return canon(code) if code else None
+
+
+def export_xi(json_dir: Path, out_csv: Path) -> int:
+    """Every Cricsheet playing XI (info.players + registry) -> one CSV. Run where the JSON lives."""
+    rows = 0
+    with open(out_csv, "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["match_id", "team", "cricsheet_id", "name"])
+        for path in sorted(Path(json_dir).glob("*.json")):
+            info = json.loads(path.read_text(encoding="utf-8")).get("info", {})
+            people = (info.get("registry") or {}).get("people") or {}
+            for team, names in (info.get("players") or {}).items():
+                for name in names:
+                    w.writerow([path.stem, team, people.get(name, ""), name])
+                    rows += 1
+    return rows
+
+
+def load_xi(con, xi_csv: Path | None, register_csv: Path | None, log=print) -> int:
+    """TEMP TABLE xi(match_id, team, player_id, name): the full XI, ids mapped like cricbot does
+    (Cricinfo id from the register, else -int(cricsheet_id, 16)). Covers fielders who never batted or bowled."""
+    con.execute(
+        "CREATE OR REPLACE TEMP TABLE xi (match_id BIGINT, team VARCHAR, player_id BIGINT, name VARCHAR)"
+    )
+    if not xi_csv or not Path(xi_csv).is_file():
+        return 0
+    register: dict[str, int] = {}
+    if register_csv and Path(register_csv).is_file():
+        with open(register_csv, encoding="utf-8", newline="") as fh:
+            register = {
+                r["identifier"]: int(r["key_cricinfo"])
+                for r in csv.DictReader(fh)
+                if (r.get("key_cricinfo") or "").isdigit()
+            }
+    rows, skipped = [], Counter()
+    with open(xi_csv, encoding="utf-8", newline="") as fh:
+        for r in csv.DictReader(fh):
+            code, cid = team_code(r["team"]), r["cricsheet_id"]
+            if not code or not cid or not r["match_id"].isdigit():
+                skipped[r["team"] if not code else "no id"] += 1
+                continue
+            rows.append((int(r["match_id"]), code, register.get(cid) or -int(cid, 16), r["name"]))
+    if rows:
+        con.executemany("INSERT INTO xi VALUES (?, ?, ?, ?)", rows)
+    log(
+        f"  xi: {len(rows)} players from Cricsheet line-ups"
+        + (f", skipped {dict(skipped)}" if skipped else "")
+    )
+    return len(rows)
+
+
 def roster_sql(con) -> str:
     """Every (match, team, player_id, name, source) the archive can vouch for. Optional tables are skipped."""
     parts = [
+        "SELECT match_id, team, player_id, name, 'cricsheet' FROM xi",
         "SELECT b.match_id, i.bat, b.batter_id, b.batter, 'espn' FROM cb.balls b JOIN inn i USING (match_id, inning)",
         "SELECT b.match_id, i.bowl, b.bowler_id, b.bowler, 'espn' FROM cb.balls b JOIN inn i USING (match_id, inning)",
         "SELECT b.match_id, i.bat, b.player_out_id, b.player_out, 'espn' FROM cb.balls b JOIN inn i USING (match_id, inning) WHERE b.is_wicket",

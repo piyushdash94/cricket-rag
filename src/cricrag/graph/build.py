@@ -3,7 +3,7 @@
 The archive is attached read-only and stays the source of truth; this file is rebuilt from it
 (`cricrag build-graph`). Edges are aggregated per season so tools can filter without touching balls:
 
-  bowled_to           bowler -> batter    balls, runs, dots, fours, sixes, dismissals (by season, phase)
+  bowled_to           bowler -> batter    balls, runs, dots, fours, sixes, dismissals (by season, phase, teams)
   dismissed           bowler -> batter    wickets credited to the bowler, by mode
   fielding_dismissal  fielder -> batter   caught / stumped / run out (Cricsheet scorecard), with the bowler
   dropped             fielder -> batter   audited drops / misfields (ipl_fielding), runs added afterwards
@@ -24,6 +24,7 @@ from cricrag.graph.identity import (
     build_people,
     has_table,
     identity_report,
+    load_xi,
     merge_negative_ids,
     resolve_fielding_csv,
     roster_sql,
@@ -44,7 +45,7 @@ EDGES = {
         FROM (SELECT DISTINCT match_id, team, player_id FROM roster) r
         JOIN (SELECT DISTINCT match_id, season FROM inn) i USING (match_id) GROUP BY ALL""",
     "bowled_to": f"""SELECT {CANON.format("bowler_id")} AS bowler_id, {CANON.format("batter_id")} AS batter_id,
-            season, phase,
+            season, phase, bat AS bat_team, bowl AS bowl_team,
             sum((NOT is_wide)::INT) AS balls, sum(runs_bat) AS runs,
             sum((NOT is_wide AND runs_bat = 0)::INT) AS dots, sum(is_four::INT) AS fours, sum(is_six::INT) AS sixes,
             sum((bowler_wicket AND player_out_id = batter_id)::INT) AS dismissals
@@ -53,8 +54,9 @@ EDGES = {
             season, lower(dismissal_type) AS mode, count(*) AS n
         FROM gb WHERE bowler_wicket AND bowler_id IS NOT NULL AND player_out_id IS NOT NULL GROUP BY ALL""",
     "fielding_dismissal": f"""SELECT {CANON.format("fielder_id")} AS fielder_id, {CANON.format("player_out_id")} AS batter_id,
-            {CANON.format("bowler_id")} AS bowler_id, season, kind, bool_or(substitute) AS substitute, count(*) AS n
-        FROM (SELECT f.fielder_id, b.player_out_id, b.bowler_id, b.season, lower(f.kind) AS kind,
+            {CANON.format("bowler_id")} AS bowler_id, season, team, kind, bool_or(substitute) AS substitute,
+            count(*) AS n
+        FROM (SELECT f.fielder_id, b.player_out_id, b.bowler_id, b.season, b.bowl AS team, lower(f.kind) AS kind,
                      coalesce(f.substitute, false) AS substitute
               FROM cb.cs_fielding f
               JOIN gb b ON b.match_id = f.match_id AND b.inning = f.inning AND b.player_out_id = f.player_out_id
@@ -64,8 +66,8 @@ EDGES = {
                                          ORDER BY b.sequence) = 1)
         GROUP BY ALL""",
     "dropped": f"""SELECT fielder_id, {CANON.format("batter_id")} AS batter_id, {CANON.format("bowler_id")} AS bowler_id,
-            season, label, count(*) AS n, sum(runs_after_drop) AS runs_after
-        FROM (SELECT m.player_id AS fielder_id, b.batter_id, b.bowler_id, b.season, m.label, m.runs_after_drop
+            season, team, label, count(*) AS n, sum(runs_after_drop) AS runs_after
+        FROM (SELECT m.player_id AS fielder_id, b.batter_id, b.bowler_id, b.season, b.bowl AS team, m.label, m.runs_after_drop
               FROM fielding_mentions m
               JOIN gb b ON b.match_id = m.match_id AND b.inning = m.inning AND b.over_label = m.over_label
               WHERE m.player_id IS NOT NULL
@@ -101,7 +103,14 @@ CHECKS = {
 }
 
 
-def build(archive: Path, out: Path, fielding_csv: Path | None = None, log=print) -> dict:
+def build(
+    archive: Path,
+    out: Path,
+    fielding_csv: Path | None = None,
+    xi_csv: Path | None = None,
+    register_csv: Path | None = None,
+    log=print,
+) -> dict:
     """Rebuild data/graph.duckdb from the archive. Returns the identity report and the parity checks."""
     out.parent.mkdir(parents=True, exist_ok=True)
     out.unlink(missing_ok=True)
@@ -109,6 +118,7 @@ def build(archive: Path, out: Path, fielding_csv: Path | None = None, log=print)
     try:
         con.execute(f"ATTACH '{archive}' AS cb (READ_ONLY)")
         con.execute(INNINGS_SQL)
+        load_xi(con, xi_csv, register_csv, log)
         con.execute(roster_sql(con))
         merge_negative_ids(con, log)
         build_people(con)
@@ -121,7 +131,7 @@ def build(archive: Path, out: Path, fielding_csv: Path | None = None, log=print)
             if name == "fielding_dismissal" and not has_table(con, "cb", "cs_fielding"):
                 con.execute(
                     "CREATE TABLE fielding_dismissal (fielder_id BIGINT, batter_id BIGINT, bowler_id BIGINT, "
-                    "season VARCHAR, kind VARCHAR, substitute BOOLEAN, n BIGINT)"
+                    "season VARCHAR, team VARCHAR, kind VARCHAR, substitute BOOLEAN, n BIGINT)"
                 )
                 continue
             con.execute(f"CREATE OR REPLACE TABLE {name} AS {sql}")
@@ -152,4 +162,13 @@ def graph_checks(con) -> dict[str, tuple[int, int, bool]]:
         a = int(con.execute(edge_sql).fetchone()[0] or 0)
         b = int(con.execute(base_sql).fetchone()[0] or 0)
         out[name] = (a, b, a == b)
+    if has_table(con, "cb", "ref_bowling"):  # an independent source: Cricinfo's scorecard
+        (bad,) = con.execute(SCORECARD_CHECK).fetchone() or (0,)
+        out["dismissed per bowler-match vs scorecard: mismatches"] = (int(bad or 0), 0, not bad)
     return out
+
+
+SCORECARD_CHECK = """WITH g AS (SELECT match_id, bowler_id, sum(n) w FROM (
+        SELECT b.match_id, b.bowler_id, count(*) n FROM gb b WHERE b.bowler_wicket GROUP BY ALL) GROUP BY ALL),
+    r AS (SELECT match_id, player_id, sum(wickets) w FROM cb.ref_bowling WHERE inning <= 2 GROUP BY ALL)
+    SELECT count(*) FROM g JOIN r ON r.match_id = g.match_id AND r.player_id = g.bowler_id WHERE g.w <> r.w"""

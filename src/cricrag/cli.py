@@ -93,7 +93,7 @@ def build_graph():
 
     s = settings()
     t = time.time()
-    report = build(s.db_path, s.graph_db, s.fielding_events, log=console.print)
+    report = build(s.db_path, s.graph_db, s.fielding_events, s.xi_csv, s.register_csv, log=console.print)
     console.print("[bold]identity[/]")
     for k, v in report["identity"].items():
         console.print(f"  {k}: {v}")
@@ -105,6 +105,22 @@ def build_graph():
     console.print(f"[{'green' if not bad else 'red'}]graph built in {time.time() - t:.0f}s -> {s.graph_db}")
     if bad:
         raise typer.Exit(1)
+
+
+@app.command("export-xi")
+def export_xi(
+    json_dir: Annotated[
+        Path | None, typer.Option(help="Cricsheet IPL JSON folder (default: cricbot's data/cricsheet/ipl)")
+    ] = None,
+):
+    """Write data/cricsheet_xi.csv (every playing XI) so build-graph knows fielders who never batted or bowled."""
+    from cricrag.graph.identity import export_xi as export
+
+    s = settings()
+    src = json_dir or s.db_path.parent / "cricsheet" / "ipl"
+    s.xi_csv.parent.mkdir(parents=True, exist_ok=True)
+    n = export(src, s.xi_csv)
+    console.print(f"[green]{n} XI rows from {src} -> {s.xi_csv}")
 
 
 @app.command("graph-explore")
@@ -165,10 +181,26 @@ def pandit():
     ), llm
 
 
+def agent():
+    """The configured agent: PanditGraph (relational branch + Pandit, the default) or Pandit alone."""
+    s = settings()
+    if s.agent != "graph":
+        return pandit()
+    from cricrag.agent.graph_agent import PanditGraph
+    from cricrag.agent.llm import GroqClient
+    from cricrag.frame import load_catalog
+
+    llm = GroqClient(
+        s.groq_api_key, s.groq_models, s.cache_dir / "llm" if s.llm_cache else None, max_wait=s.groq_max_wait
+    )
+    return PanditGraph(load_catalog(), s.graph_db, llm, pandit_factory=lambda: pandit()[0]), llm
+
+
 @app.command()
 def ask(question: str, show_trace: bool = typer.Option(False, "--trace")):
-    """Ask Pandit: routes to story / event / stats / search, then one LLM call writes the answer."""
-    agent, llm = pandit()
+    """Ask the agent: relational questions go to the graph; story / event / stats / search go to Pandit."""
+    agent_, llm = agent()
+    ans = agent_.ask(question)
     ans = agent.ask(question)
     console.print(f"\n{ans.text}\n")
     console.print(
@@ -176,6 +208,9 @@ def ask(question: str, show_trace: bool = typer.Option(False, "--trace")):
     )
     if ans.problems:
         console.print(f"[yellow]validator: {ans.problems}")
+    if ans.extra.get("graph"):
+        g = ans.extra["graph"]
+        console.print(f"[dim]graph: {g['tool']} - {len(g['nodes'])} nodes, {len(g['edges'])} edges")
     if show_trace:
         console.print_json(json.dumps(ans.trace, default=str))
 

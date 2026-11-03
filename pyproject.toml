@@ -22,6 +22,7 @@ dependencies = [
   "cricdata>=0.3.2",        # cricbot's match pages: ESPN commentary and cross-check (optional at runtime)
   "beautifulsoup4>=4.12",
   "networkx>=3.3",
+  "langgraph>=0.4",
 ]
 
 [dependency-groups]

@@ -147,6 +147,7 @@ class Answer:
     model: str | None = None
     seconds: float = 0.0
     trace: list[dict[str, Any]] = field(default_factory=list)
+    extra: dict[str, Any] = field(default_factory=dict)  # e.g. the relational subgraph for the UI
 
 
 class Pandit:
