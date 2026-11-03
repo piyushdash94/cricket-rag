@@ -65,6 +65,10 @@ class Settings(BaseSettings):
         return self.data_dir / "events.duckdb"
 
     @property
+    def graph_db(self) -> Path:
+        return self.data_dir / "graph.duckdb"
+
+    @property
     def cache_dir(self) -> Path:
         return self.data_dir / "cache"
 

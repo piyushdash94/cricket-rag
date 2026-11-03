@@ -106,6 +106,22 @@ runs added afterwards), and Momentum lists the shifts and compares powerplay, mi
 colour themes: Floodlit, Night match, Pitch, Pavilion and Pink ball. Commentary comes from the local archive
 when ESPN's live feed is unavailable.
 
+### Relational graph (players linked to players)
+
+`uv run cricrag build-graph` writes `data/graph.duckdb` from the archive (read-only) and the ipl_fielding CSV:
+
+1. **One id per person.** The key is the Cricinfo `player_id`. Cricsheet players missing from its register
+   (negative ids) are merged into a Cricinfo id only when every match they appear in agrees, and fielders named
+   in commentary ("Pandya", "Boom", "de Kock") are matched only against *that team's players in that match*.
+   Each match records its method (exact, nickname, surname_initials, single_token, fuzzy); two candidates is
+   `ambiguous` and gets no id.
+2. **Edge tables**, per season: `bowled_to` (balls, runs, dots, boundaries, dismissals, by phase), `dismissed`,
+   `fielding_dismissal` (c / st / run out with the bowler), `dropped` (audited drops with runs added),
+   `played_for`. The build fails if any edge total differs from the same count taken from `balls`.
+
+`uv run cricrag graph-explore` shows network views over it: bowler and batter PageRank, fielder–bowler pairs and
+teammate communities; `--batter "Kohli"` lists that batter's nemeses. Rankings are network heuristics, not stats.
+
 Other commands: `cricrag frame "<question>"` (what the code extracted), `cricrag search`, `cricrag news`,
 `cricrag eval-pandit --suite v3|events`, `cricrag eval-routes --mode plan|full`, `cricrag eval-retrieval`.
 The scripts in `scripts/eval/` re-run the public-question tests above; `scripts/groq_quota.py` shows how much

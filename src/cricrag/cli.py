@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -83,6 +84,61 @@ def build_events():
     t = time.time()
     n = build(s.db_path, s.events_db, s.fielding_events, log=console.print)
     console.print(f"[green]{n} events in {time.time() - t:.0f}s")
+
+
+@app.command("build-graph")
+def build_graph():
+    """Build data/graph.duckdb: canonical player ids, then player-to-player edge tables, with parity checks."""
+    from cricrag.graph.build import build
+
+    s = settings()
+    t = time.time()
+    report = build(s.db_path, s.graph_db, s.fielding_events, log=console.print)
+    console.print("[bold]identity[/]")
+    for k, v in report["identity"].items():
+        console.print(f"  {k}: {v}")
+    console.print("[bold]parity (edge table vs archive)[/]")
+    bad = 0
+    for k, (a, b, ok) in report["parity"].items():
+        bad += not ok
+        console.print(f"  {'[green]ok[/]' if ok else '[red]MISMATCH[/]'} {k}: {a} vs {b}")
+    console.print(f"[{'green' if not bad else 'red'}]graph built in {time.time() - t:.0f}s -> {s.graph_db}")
+    if bad:
+        raise typer.Exit(1)
+
+
+@app.command("graph-explore")
+def graph_explore(
+    batter: str = typer.Option(None, help="show this batter's nemesis list"),
+    season: Annotated[list[str] | None, typer.Option(help="limit to archive seasons, e.g. 2024")] = None,
+    top: int = 10,
+):
+    """NetworkX views over the graph: bowler/batter PageRank, fielder-bowler pairs, teammate communities."""
+    import duckdb
+
+    from cricrag.graph import explore as gx
+
+    with duckdb.connect(str(settings().graph_db), read_only=True) as con:
+        if batter:
+            hits = gx.find_player(con, batter)
+            if not hits:
+                raise typer.BadParameter(f"no player matches {batter!r}")
+            pid, name, _ = hits[0]
+            console.print(f"[bold]nemesis: {name}[/] (dismissals, balls, runs)")
+            for row in gx.nemesis(con, pid, seasons=season or None)[:top]:
+                console.print(f"  {row}")
+            return
+        for title, rows in (
+            ("bowler PageRank (x1000, wickets)", gx.bowler_rank(con, season or None, top=top)),
+            ("batter PageRank (x1000, runs)", gx.batter_rank(con, season or None, top=top)),
+            ("fielder-bowler pairs (c/st X b Y)", gx.fielder_bowler(con, season or None, top=top)),
+        ):
+            console.print(f"[bold]{title}[/]")
+            for r in rows:
+                console.print(f"  {r}")
+        console.print("[bold]teammate communities (top 8 names each)[/]")
+        for c in gx.communities(con, season or None)[:6]:
+            console.print(f"  {len(c):3} players: {', '.join(c[:8])}")
 
 
 def pandit():
