@@ -58,6 +58,13 @@ def _n(k: int, word: str) -> str:
     return f"{k} {word}es" if word.endswith(("x", "s", "ch")) else f"{k} {word}s"
 
 
+def _tie(ev: Evidence, names: list[str], values: list[int], what: str) -> None:
+    """State a shared top value as a tie, so the writer can't crown one of several equal leaders."""
+    top = [n for n, v in zip(names, values, strict=True) if v == values[0]]
+    if len(top) > 1:
+        ev.add(f"Tied for the most {what} ({values[0]}): {', '.join(top)}")
+
+
 def _scope(seasons: list[str] | None) -> str:
     return f"in {', '.join(seasons)}" if seasons else "across all IPL seasons in the archive"
 
@@ -162,6 +169,7 @@ def nemesis(
     if not rows:
         ev.gap = f"No bowler has dismissed {tn} {_scope(seasons)}."
         return ev
+    _tie(ev, [r[1] for r in rows], [r[2] for r in rows], "dismissals")
     for pid, bn, d, b, r, sr in rows:
         ev.add(f"{bn} dismissed {tn} {_n(d, 'time')}{f' while {tn} batted for {team}' if team else ''} {_scope(seasons)}, conceding {r} runs in {b} balls (strike rate {sr})",
                dict(bowler=bn, dismissals=d, balls=b, runs=r, strike_rate=sr))  # fmt: skip
@@ -189,6 +197,7 @@ def bunnies(
     if not rows:
         ev.gap = f"{bn} has not dismissed any batter {_scope(seasons)}."
         return ev
+    _tie(ev, [r[1] for r in rows], [r[2] for r in rows], "dismissals")
     for pid, tn, d, b, r, sr in rows:
         ev.add(f"{bn} dismissed {tn} {_n(d, 'time')}{f' while bowling for {team}' if team else ''} {_scope(seasons)}, conceding {r} runs in {b} balls (strike rate {sr})",
                dict(batter=tn, dismissals=d, balls=b, runs=r, strike_rate=sr))  # fmt: skip
@@ -223,6 +232,7 @@ def catch_pairs(con, fielder: int | None = None, bowler: int | None = None, team
     if not rows:
         ev.gap = f"No caught or stumped dismissals match that {_scope(seasons)}."
         return ev
+    _tie(ev, [f"{r[1]} off {r[3]}" for r in rows], [r[4] for r in rows], "dismissals")
     for fid, fn, bid, bn, n, st in rows:
         extra = f" ({st} stumpings)" if st else ""
         ev.add(f"caught or stumped by {fn} off {bn}: {_n(n, 'dismissal')}{extra} {_scope(seasons)}",
@@ -254,6 +264,7 @@ def drops(con, fielder: int | None = None, bowler: int | None = None, team: str 
     if not rows:
         ev.gap = f"No audited dropped catches match that {_scope(seasons)}."
         return ev
+    _tie(ev, [f"{r[1]} off {r[3]}" for r in rows], [r[4] for r in rows], "drops")
     for fid, fn, bid, bn, n, ra in rows:
         ev.add(f"{fn} dropped {_n(n, 'catch')} off {bn}'s bowling {_scope(seasons)}; the batters added {ra} runs after",
                dict(fielder=fn, bowler=bn, drops=n, runs_after=ra))  # fmt: skip
