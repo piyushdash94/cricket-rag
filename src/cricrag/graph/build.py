@@ -127,6 +127,9 @@ def build(
         )
         con.execute(BALLS_VIEW)
         con.execute("CREATE OR REPLACE TABLE inn_meta AS SELECT * FROM inn")
+        con.execute("""CREATE OR REPLACE TABLE season_years AS  -- archive season ('2007/08') -> IPL year (2008)
+            SELECT season, mode(year(start_date)) AS year FROM cb.matches
+            WHERE match_id IN (SELECT match_id FROM inn) GROUP BY 1""")
         for name, sql in EDGES.items():
             if name == "fielding_dismissal" and not has_table(con, "cb", "cs_fielding"):
                 con.execute(

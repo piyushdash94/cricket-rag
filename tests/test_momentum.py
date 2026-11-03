@@ -67,6 +67,15 @@ class MomentumShiftTests(unittest.TestCase):
         swing = next(event for event in events if event["type"] == "chase_swing")
         self.assertEqual(swing["favours"], "RR")
         self.assertIn("were needed", swing["headline"])
+        # runs needed is target - score at the start of the window, not the window's par
+        start = int(swing["score_before"].split("/")[0])
+        self.assertEqual(swing["needed_before"], 181 - start)
+        self.assertIn(
+            f"when {181 - start} were needed off {swing['balls_left_before']} balls", swing["headline"]
+        )
+        rate = 6 * swing["needed_before"] / swing["balls_left_before"]
+        self.assertAlmostEqual(swing["required_rate_before"], round(rate, 2))
+        self.assertAlmostEqual(swing["par"], round(rate * swing["balls"] / 6, 1))
         dead = innings([2] * 20, inning=2)  # needs 30+ an over almost at once
         dead_events = innings_shifts(dead, batting="GT", bowling="RR", target=400)
         self.assertFalse(any(event["type"] == "chase_swing" for event in dead_events))

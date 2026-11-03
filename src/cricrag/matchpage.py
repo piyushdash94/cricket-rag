@@ -13,6 +13,7 @@ import re
 from typing import Any
 
 from cricrag.entities import canon
+from cricrag.text import snippet
 
 
 def archive_commentary(con, mid: int) -> list[dict[str, Any]]:
@@ -95,6 +96,24 @@ def drops(con, events, mid: int) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def cap_commentary(detail: dict[str, Any]) -> dict[str, Any]:
+    """Every commentary string a match page sends is a short plain-text snippet, whatever its source.
+
+    cricbot joins ESPN's preText + text + postText for a ball, and on a match's last ball postText is the whole
+    post-match live blog (presentation quotes, fan comments, <a> and <!-- twitter --> embeds)."""
+    for ball in detail.get("balls") or []:
+        for key in ("text", "commentary"):
+            if isinstance(ball.get(key), str):
+                ball[key] = snippet(ball[key])
+    analytics = detail.get("analytics") or {}
+    for key in ("shifts", "momentum_shifts"):
+        for shift in analytics.get(key) or []:
+            for item in shift.get("evidence") or []:
+                if isinstance(item.get("text"), str):
+                    item["text"] = snippet(item["text"])
+    return detail
 
 
 def enrich(detail: dict[str, Any], con, events, mid: int) -> dict[str, Any]:

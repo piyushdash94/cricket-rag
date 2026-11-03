@@ -44,11 +44,20 @@ def pagerank(g: nx.DiGraph, alpha: float = 0.85, tol: float = 1e-10, max_iter: i
     return rank
 
 
+def qualify(seasons, min_balls: int | None) -> int:
+    """Balls needed to be ranked: 300 across seasons, 120 (20 overs) inside one or two seasons."""
+    if min_balls is not None:
+        return min_balls
+    return 120 if seasons and len(seasons) <= 2 else 300
+
+
 def names(con) -> dict[int, str]:
     return dict(con.execute("SELECT player_id, name FROM people").fetchall())
 
 
-def bowler_rank(con, seasons=None, min_balls: int = 300, top: int = 15) -> list[tuple[str, float, int]]:
+def bowler_rank(
+    con, seasons=None, min_balls: int | None = None, top: int = 15
+) -> list[tuple[str, float, int]]:
     w, p = _where(seasons)
     edges = con.execute(
         f"SELECT batter_id, bowler_id, sum(n) FROM dismissed WHERE {w} GROUP BY 1, 2", p
@@ -62,12 +71,14 @@ def bowler_rank(con, seasons=None, min_balls: int = 300, top: int = 15) -> list[
     rows = [
         (nm.get(b, str(b)), round(s * 1000, 3), int(wk.get(b, 0)))
         for b, s in pr.items()
-        if vol.get(b, 0) >= min_balls
+        if vol.get(b, 0) >= qualify(seasons, min_balls)
     ]
     return sorted(rows, key=lambda r: -r[1])[:top]
 
 
-def batter_rank(con, seasons=None, min_balls: int = 300, top: int = 15) -> list[tuple[str, float, int]]:
+def batter_rank(
+    con, seasons=None, min_balls: int | None = None, top: int = 15
+) -> list[tuple[str, float, int]]:
     w, p = _where(seasons)
     edges = con.execute(
         f"""SELECT bowler_id, batter_id, sum(runs) * 1.0 / greatest(sum(dismissals), 1)
@@ -85,7 +96,7 @@ def batter_rank(con, seasons=None, min_balls: int = 300, top: int = 15) -> list[
     rows = [
         (nm.get(b, str(b)), round(s * 1000, 3), faced[b][1])
         for b, s in pr.items()
-        if faced.get(b, (0, 0))[0] >= min_balls
+        if faced.get(b, (0, 0))[0] >= qualify(seasons, min_balls)
     ]
     return sorted(rows, key=lambda r: -r[1])[:top]
 

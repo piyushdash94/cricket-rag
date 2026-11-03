@@ -28,6 +28,7 @@ from cricrag.agent.validate import Sources, check, cited, normalise
 from cricrag.entities import Catalog, link_players
 from cricrag.frame import PRONOUN, build_frame, find_matches
 from cricrag.retrieval.hybrid import Filters, Retriever
+from cricrag.text import snippet
 
 STORY = re.compile(
     r"\b(turn(ed|ing)?|recap|summar\w*|story|key moments?|momentum|how did .+ (win|lose|lost)|"
@@ -118,6 +119,12 @@ WRITER = """You are Pandit, an IPL analyst. Answer the question using only the E
 - A VERIFIED ANSWER line is correct: restate its names and numbers first, then add detail only if asked.
 - If a table title states a minimum (e.g. "min 60 balls"), say it with the answer.
 - If the evidence does not answer the question, say exactly what is missing."""
+
+
+def _display(line: str) -> str:
+    """An evidence line as shown when the writer is unavailable: the commentary part as a plain snippet."""
+    m = re.match(r"(.*?BODY: )(.*?)(\s*\[C\d+\])?$", line, re.S) or re.match(r"(C\d+: )(.*?)()$", line, re.S)
+    return f"{m.group(1).replace('BODY: ', '')}{snippet(m.group(2))}{m.group(3) or ''}" if m else line
 
 
 class Trace(list):
@@ -614,8 +621,10 @@ class Pandit:
                 "I couldn't find that in the IPL archive.", program, frame, src, trace, t0, mode="empty"
             )
         keep = lines[:2] if program == "story" else lines[:8]  # story: the facts sheet and the decisive shift
-        extractive = "\n".join(
-            re.sub(r"^(HEADER: |Commentary )", "", ln).replace("DECISIVE SHIFT: ", "Turning point: ")
+        extractive = "\n".join(  # shown to people: commentary parts become short plain-text snippets
+            _display(
+                re.sub(r"^(HEADER: |Commentary )", "", ln).replace("DECISIVE SHIFT: ", "Turning point: ")
+            )
             for ln in keep
         )
         if not self.llm.available:

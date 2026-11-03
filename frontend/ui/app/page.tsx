@@ -18,7 +18,8 @@ function RichText({ text }: { text: string }) {
   const parts: ReactNode[] = [];
   let bold = false;
   let italic = false;
-  text.split(/(<\/?[a-zA-Z][^>]{0,40}>)/).forEach((chunk, index) => {
+  // Any tag or HTML comment is markup, whatever its length (ESPN embeds long <a href> and <!-- twitter --> blocks).
+  text.replace(/<!--[\s\S]*?(-->|$)/g, " ").split(/(<\/?[a-zA-Z][^>]*>)/).forEach((chunk, index) => {
     const tag = chunk.match(/^<(\/?)([a-zA-Z]+)/);
     if (tag) {
       const name = tag[2].toLowerCase();
@@ -502,9 +503,9 @@ export default function Home() {
 
   const visibleBalls = useMemo(() => detail?.balls.filter((ball) => !inningFilter || ball.inning === inningFilter) ?? [], [detail, inningFilter]);
   const llmLabel = agent?.provider ? `${agent.provider} · ${agent.model}` : agent ? "LLM offline · grounded recaps" : "Checking model…";
-  const suggestions = selected
-    ? ["Where did this match turn?", "Summarise the chase", "Who bowled the best spell in this match?", "What happened in the last over?"]
-    : [`Tell me about the ${season} final`, `Most sixes in IPL ${season}`, "Kohli chasing vs batting first", "Who are the best finishers in the IPL?"];
+  const suggestions = selected  // two at most: the chat should start with a choice, not a menu
+    ? ["Where did this match turn?", "Who bowled the best spell in this match?"]
+    : [`Tell me about the ${season} final`, "Who is Rohit Sharma's nemesis?"];
 
   return (
     <div className={`app ${dark ? "dark" : "light"} theme-${theme} view-${mobileView}${selected ? " has-match" : ""}${showStats || showNetwork ? " stats-open" : ""}${!selected && !showStats && !showNetwork ? " home-open" : ""}`}>
@@ -587,7 +588,7 @@ export default function Home() {
           onClose={() => { setShowStats(false); setMobileView("chat"); }} />}
         {showNetwork && <NetworkPanel onClose={() => { setShowNetwork(false); setMobileView("chat"); }}
           onAsk={(question) => { setMobileView("chat"); void sendChat(undefined, question); }} />}
-        {!selected && !showStats && !showNetwork && <div className="workspace-body fp-body"><FrontPage season={season} onSeason={setSeason} news={news}
+        {!selected && !showStats && !showNetwork && <div className="workspace-body fp-body"><FrontPage season={season} onSeason={setSeason} news={news} onNetwork={openNetwork}
           onOpen={(ref) => { if (ref.series_slug && ref.match_slug) openBySlugs(ref.series_slug, ref.match_slug); }}
           onAsk={(question) => { setMobileView("chat"); void sendChat(undefined, question); }}
           onChat={() => setMobileView("chat")}
@@ -612,7 +613,16 @@ export default function Home() {
       </section>
 
       <nav className="mobile-nav" aria-label="Sections">
-        {(["matches", "chat", "stats", "match"] as const).map((view) => <button key={view} className={mobileView === view ? "active" : ""} onClick={() => { if (view === "stats" || view === "match") setShowStats(view === "stats"); setMobileView(view); }} disabled={view === "match" && !selected}>{{ matches: "Home", chat: "Pandit", stats: "Stats", match: "Match" }[view]}</button>)}
+        {(["matches", "chat", "stats", "network", "match"] as const).map((view) => {
+          const active = view === "network" ? mobileView === "stats" && showNetwork : view === "stats" ? mobileView === "stats" && !showNetwork : mobileView === view;
+          const open = () => {
+            if (view === "network") return openNetwork();
+            if (view === "stats") return openStats();
+            if (view === "match") { setShowStats(false); setShowNetwork(false); }
+            setMobileView(view);
+          };
+          return <button key={view} className={active ? "active" : ""} onClick={open} disabled={view === "match" && !selected}>{{ matches: "Home", chat: "Pandit", stats: "Stats", network: "Network", match: "Match" }[view]}</button>;
+        })}
       </nav>
       <DocsDrawer open={docsOpen} docs={docs} onClose={() => setDocsOpen(false)} />
       <TraceDrawer open={traceOpen} graph={graph} trace={trace} loading={chatLoading} onClose={() => setTraceOpen(false)} />
