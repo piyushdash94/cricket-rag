@@ -140,6 +140,10 @@ def build(
             con.execute(f"CREATE OR REPLACE TABLE {name} AS {sql}")
             (n,) = con.execute(f"SELECT count(*) FROM {name}").fetchone() or (0,)
             log(f"  {name}: {n} edges")
+        # who kept wicket: a player with a stumping for that team in that season (Cricsheet has no keeper flag)
+        con.execute("""CREATE OR REPLACE TABLE keepers AS
+            SELECT DISTINCT fielder_id AS player_id, team, season FROM fielding_dismissal
+            WHERE kind = 'stumped' AND NOT coalesce(substitute, false)""")
         report = {"identity": identity_report(con), "parity": graph_checks(con)}
         con.execute(
             "CREATE OR REPLACE TABLE build_report (section VARCHAR, check_name VARCHAR, value VARCHAR)"

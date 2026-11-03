@@ -67,6 +67,7 @@ export function FrontPage({ season, onSeason, onOpen, onAsk, onChat, onNetwork, 
   const runnerUp = page?.final?.teams.find((team) => team !== champion);
 
   return <div className="fp" style={{ "--champion": teamColor(champion) } as CSSProperties}>
+    <NewsTicker news={news} season={season} />
     <header className="fp-hero">
       <div className="fp-hero-top">
         <div className="fp-year" aria-label={`IPL ${season}`}><span>IPL</span><strong>{season}</strong></div>
@@ -119,7 +120,7 @@ export function FrontPage({ season, onSeason, onOpen, onAsk, onChat, onNetwork, 
       </section>}
     </>}
 
-    <ReadingRoom news={news} />
+    <ReadingRoom news={news} season={season} />
     <section className="fp-hall-mobile" aria-label="All-time lists">{hall}</section>
   </div>;
 }
@@ -179,12 +180,37 @@ function EraChart({ eras, season, onSeason }: { eras: Era[]; season: number; onS
 
 const KIND_LABELS: Record<string, string> = { all: "Everything", rules: "Rule changes", trends: "Trends", records: "Records", news: "News" };
 
-function ReadingRoom({ news }: { news: News | null }) {
+/** Live ESPN stories first, then the selected season's pieces, then the rest newest first. */
+function ordered(news: News, season: number): Article[] {
+  const year = (a: Article) => a.year ?? (a.published ? Number(a.published.slice(0, 4)) : 0);
+  const rest = [...news.reading].sort((a, b) => Number(year(b) === season) - Number(year(a) === season) || year(b) - year(a));
+  return [...news.live, ...rest];
+}
+
+/** A scrolling strip of headlines, each a link to the article. Pauses on hover, on focus, or with its button. */
+function NewsTicker({ news, season }: { news: News | null; season: number }) {
+  const [paused, setPaused] = useState(false);
+  const items = useMemo(() => (news ? ordered(news, season) : []), [news, season]);
+  if (!items.length) return null;
+  const strip = (copy: boolean) => items.map((item) => <a key={`${copy}-${item.url}`} href={item.url} target="_blank" rel="noopener noreferrer"
+    className={`kind-${item.kind}`} tabIndex={copy ? -1 : 0} aria-hidden={copy || undefined}>
+    <b>{item.published ? "New" : KIND_LABELS[item.kind] ?? item.kind}</b>{item.title}<span aria-hidden="true">↗</span></a>);
+  return <section className={`fp-news${paused ? " paused" : ""}`} aria-label="IPL headlines">
+    <span className="fp-news-label"><i aria-hidden="true" />Headlines</span>
+    <div className="fp-news-window">
+      <div className="fp-news-track" style={{ "--ticker-s": `${Math.max(30, items.length * 7)}s` } as CSSProperties}>{strip(false)}{strip(true)}</div>
+    </div>
+    <button className="fp-news-toggle" onClick={() => setPaused((p) => !p)} aria-pressed={paused} aria-label={paused ? "Play headlines" : "Pause headlines"}>{paused ? "▶" : "❚❚"}</button>
+    <a className="fp-news-all" href="#reading-room">All stories ↓</a>
+  </section>;
+}
+
+function ReadingRoom({ news, season }: { news: News | null; season: number }) {
   const [kind, setKind] = useState("all");
   if (!news) return null;
-  const items = [...news.live, ...news.reading].filter((item) => kind === "all" || item.kind === kind);
-  return <section className="fp-section fp-reading" aria-label="Reading room">
-    <div className="fp-head"><h3>Reading room</h3><p>Rule changes, trends and records from ESPNcricinfo, with new IPL stories from ESPN&apos;s feed first.</p></div>
+  const items = ordered(news, season).filter((item) => kind === "all" || item.kind === kind);
+  return <section className="fp-section fp-reading" id="reading-room" aria-label="Reading room">
+    <div className="fp-head"><h3>Reading room</h3><p>New IPL stories from ESPN&apos;s feed first, then pieces on IPL {season}, then rule changes, trends and records, newest first.</p></div>
     <div className="fp-pills" role="tablist" aria-label="Article type">{["all", ...news.kinds].map((name) => <button key={name} role="tab" aria-selected={kind === name} className={kind === name ? "active" : ""} onClick={() => setKind(name)}>{KIND_LABELS[name] ?? name}</button>)}</div>
     <ul className="fp-articles">{items.map((item) => <li key={item.url} className={`kind-${item.kind}`}>
       <a href={item.url} target="_blank" rel="noopener noreferrer">

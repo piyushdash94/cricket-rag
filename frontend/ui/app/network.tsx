@@ -6,11 +6,11 @@
 // Every number shown comes from /api/graph/*, which reads SQL-built edge tables.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { FormEvent } from "react";
+import type { CSSProperties, FormEvent } from "react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 
-export type GraphNode = { id: number; label: string; role: string; center?: boolean };
+export type GraphNode = { id: number; label: string; role: string; center?: boolean; keeper?: boolean };
 export type GraphEdge = { source: number; target: number; kind: string; [k: string]: string | number | undefined };
 export type GraphPayload = { tool: string; title: string; nodes: GraphNode[]; edges: GraphEdge[]; rows: Record<string, unknown>[]; gap?: string | null; lines?: string[] };
 export type GraphCard = GraphPayload & { type: "graph" };
@@ -28,87 +28,202 @@ async function get<T>(path: string): Promise<T> {
   return r.json();
 }
 
-/** Edge weight shown as line width: the count the edge is about. */
+/** The count an edge is about (dismissals, drops, seasons together, balls). */
 function weight(e: GraphEdge): number {
   return Number(e.dismissals ?? e.drops ?? e.seasons ?? e.balls ?? 1) || 1;
 }
+function unitOf(edges: GraphEdge[]): string {
+  const k = edges[0]?.kind;
+  return k === "dropped_off" ? "drops" : k === "teammates" ? "seasons together" : k === "bowled_to" ? "balls" : "dismissals";
+}
+
+/** Width and shade spread over the range actually shown (min..max), so 5 against 7 is visible, not 5 against 7 out of 0..7. */
+function scale(edges: GraphEdge[]) {
+  const values = edges.map(weight);
+  const lo = Math.min(...values), hi = Math.max(...values);
+  const t = (v: number) => (hi === lo ? 1 : (v - lo) / (hi - lo));
+  return { lo, hi, width: (v: number) => 2 + 9 * t(v), opacity: (v: number) => 0.35 + 0.65 * t(v) };
+}
+
 /** Short label drawn on the edge; the full numbers are in its tooltip and the list under the picture. */
 function edgeLabel(e: GraphEdge): string {
-  if (e.kind === "dismissed" || e.kind === "bowled_to") return `${e.dismissals} out`;
-  if (e.kind === "caught_off") return `${e.dismissals} c/st`;
-  if (e.kind === "dropped_off") return `${e.drops} drop${e.drops === 1 ? "" : "s"}`;
-  if (e.kind === "teammates") return e.season ? `${e.team} ${e.season}` : `${e.seasons} yrs`;
+  if (e.kind === "dismissed" || e.kind === "bowled_to") return `${e.dismissals}`;
+  if (e.kind === "caught_off") return `${e.dismissals}`;
+  if (e.kind === "dropped_off") return `${e.drops}`;
+  if (e.kind === "teammates") return e.season ? `${e.team} ${e.season}` : `${e.seasons}`;
   return "";
 }
 function edgeTitle(e: GraphEdge, name: (id: number) => string): string {
   const base = `${name(e.source)} → ${name(e.target)}`;
   if (e.kind === "dismissed" || e.kind === "bowled_to") return `${base}: ${e.dismissals} dismissals, ${e.runs} runs off ${e.balls} balls`;
+  if (e.kind === "caught_off") return `${base}: ${e.dismissals} caught or stumped${e.stumpings ? ` (${e.stumpings} stumpings)` : ""}`;
+  if (e.kind === "dropped_off") return `${base}: ${e.drops} dropped${e.runs_after !== undefined ? `, ${e.runs_after} runs added after` : ""}`;
   return `${base}: ${edgeLabel(e)}`;
 }
 
-/** Radial ego network: the centre player in the middle, neighbours on a ring, width = weight. */
+/** A count in a pill, readable over any line or theme. */
+function Chip({ x, y, text, strong }: { x: number; y: number; text: string; strong?: boolean }) {
+  const w = Math.max(20, 8 + text.length * 7.2);
+  return <g className={`net-chip${strong ? " strong" : ""}`} transform={`translate(${x},${y})`}>
+    <rect x={-w / 2} y={-9} width={w} height={18} rx={9} /><text y={4}>{text}</text>
+  </g>;
+}
+
+/** Shape carries the role (square = wicketkeeper), so it works in every theme without relying on colour. */
+function Node({ n, big }: { n: GraphNode; big?: boolean }) {
+  const r = big ? 13 : 8;
+  return n.keeper
+    ? <rect x={-r} y={-r} width={2 * r} height={2 * r} rx={3} fill="var(--accent)" className="net-node keeper" />
+    : <circle r={r} fill={ROLE_COLOR[n.role] ?? "var(--accent)"} className="net-node" />;
+}
+
+function Legend({ edges, nodes }: { edges: GraphEdge[]; nodes: GraphNode[] }) {
+  if (!edges.length) return null;
+  const { lo, hi } = scale(edges);
+  const roles = new Set(nodes.map((n) => (n.keeper ? "keeper" : n.role)));
+  const label: Record<string, string> = { batter: "batter", bowler: "bowler", fielder: "fielder", keeper: "wicketkeeper", player: "player" };
+  return <div className="net-legend">
+    <span className="net-legend-scale"><i style={{ height: 2 }} />{lo}<i style={{ height: 11 }} />{hi} {unitOf(edges)}</span>
+    {[...roles].map((r) => <span key={r}><b className={`dot ${r}`} />{label[r] ?? r}</span>)}
+    {roles.has("keeper") && <small title="Cricsheet has no keeper flag: a player counts as the keeper for a team in a season in which he made a stumping for it">WK = made a stumping for that side that season</small>}
+  </div>;
+}
+
+/** Radial ego network: the strongest link at 12 o'clock, then clockwise by count. */
 export function GraphView({ nodes, edges, height = 300, chain = false }: { nodes: GraphNode[]; edges: GraphEdge[]; height?: number; chain?: boolean }) {
   const W = 460, H = height, cx = W / 2, cy = H / 2, R = Math.min(W, H) / 2 - 46; // R: the two-player layout
   const center = chain ? undefined : nodes.find((n) => n.center) ?? (nodes.length === 2 ? undefined : nodes[0]);
-  const ring = nodes.filter((n) => n !== center);
+  const strength = new Map<number, number>();
+  for (const e of edges) for (const id of [e.source, e.target]) if (id !== center?.id) strength.set(id, Math.max(strength.get(id) ?? 0, weight(e)));
+  const ring = nodes.filter((n) => n !== center).sort((a, b) => (strength.get(b.id) ?? 0) - (strength.get(a.id) ?? 0));
   const pos = new Map<number, { x: number; y: number }>();
   if (center) pos.set(center.id, { x: cx, y: cy });
-  if (chain) nodes.forEach((n, i) => pos.set(n.id, { x: 50 + (i * (W - 100)) / Math.max(nodes.length - 1, 1), y: cy + (i % 2 ? -30 : 30) }));
-  else if (!center && ring.length === 2) { pos.set(ring[0].id, { x: cx - R, y: cy }); pos.set(ring[1].id, { x: cx + R, y: cy }); }
-  // Ring nodes sit on an ellipse that leaves room at the sides for names, which point away from the centre.
   const RX = W / 2 - 120, RY = H / 2 - 30;
   const angle = new Map<number, number>();
-  if (!chain && !(!center && ring.length === 2)) ring.forEach((n, i) => {
+  if (chain) nodes.forEach((n, i) => pos.set(n.id, { x: 50 + (i * (W - 100)) / Math.max(nodes.length - 1, 1), y: cy + (i % 2 ? -30 : 30) }));
+  else if (!center && ring.length === 2) { pos.set(ring[0].id, { x: cx - R, y: cy }); pos.set(ring[1].id, { x: cx + R, y: cy }); }
+  else ring.forEach((n, i) => {
     const a = -Math.PI / 2 + (2 * Math.PI * i) / Math.max(ring.length, 1);
     angle.set(n.id, a);
     pos.set(n.id, { x: cx + RX * Math.cos(a), y: cy + RY * Math.sin(a) });
   });
-  const max = Math.max(1, ...edges.map(weight));
+  const sc = scale(edges);
   const name = (id: number) => nodes.find((n) => n.id === id)?.label ?? String(id);
-  return <svg className="net-svg" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Relationship graph">
-    {edges.map((e, i) => {
-      const a = pos.get(e.source), b = pos.get(e.target);
-      if (!a || !b) return null;
-      const w = 1.5 + 6 * (weight(e) / max);
-      // label at the middle of each spoke: short labels on separate rays never collide
-      const outer = center && e.source === center.id ? b : center && e.target === center.id ? a : null;
-      const inner = outer === a ? b : a;
-      const lx = outer ? inner.x + 0.5 * (outer.x - inner.x) : (a.x + b.x) / 2;
-      const ly = outer ? inner.y + 0.5 * (outer.y - inner.y) : (a.y + b.y) / 2;
-      return <g key={i}>
-        <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} strokeWidth={w} className={`net-edge ${e.kind}`}><title>{edgeTitle(e, name)}</title></line>
-        <text x={lx} y={ly + 3} className="net-edge-label">{edgeLabel(e)}</text>
-      </g>;
-    })}
-    {nodes.map((n) => { const p = pos.get(n.id); if (!p) return null; const big = n === center;
-      return <g key={n.id} transform={`translate(${p.x},${p.y})`}>
-        <circle r={big ? 13 : 8} fill={ROLE_COLOR[n.role] ?? "var(--accent)"} className="net-node" />
-        {(() => {
-          const a = angle.get(n.id);
-          if (big || a === undefined) return <text y={big ? 28 : 21} className={`net-label${big ? " center" : ""}`}>{n.label}</text>;
-          const c = Math.cos(a), sn = Math.sin(a);
-          if (Math.abs(c) < 0.35) return <text y={sn < 0 ? -13 : 22} className="net-label">{n.label}</text>; // top / bottom
-          return <text x={c > 0 ? 13 : -13} y={4} className={`net-label ${c > 0 ? "right" : "left"}`}>{n.label}</text>;
-        })()}
-      </g>; })}
-  </svg>;
+  return <figure className="net-figure">
+    <svg className="net-svg" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Relationship graph">
+      {edges.map((e, i) => {
+        const a = pos.get(e.source), b = pos.get(e.target);
+        if (!a || !b) return null;
+        const v = weight(e);
+        return <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} strokeWidth={sc.width(v)} strokeOpacity={sc.opacity(v)} className={`net-edge ${e.kind}`}><title>{edgeTitle(e, name)}</title></line>;
+      })}
+      {edges.map((e, i) => {
+        const a = pos.get(e.source), b = pos.get(e.target);
+        if (!a || !b) return null;
+        const outer = center && e.source === center.id ? b : center && e.target === center.id ? a : null;
+        const inner = outer === a ? b : a;
+        const lx = outer ? inner.x + 0.55 * (outer.x - inner.x) : (a.x + b.x) / 2;
+        const ly = outer ? inner.y + 0.55 * (outer.y - inner.y) : (a.y + b.y) / 2;
+        return <Chip key={i} x={lx} y={ly} text={edgeLabel(e)} strong={weight(e) === sc.hi} />;
+      })}
+      {nodes.map((n) => { const p = pos.get(n.id); if (!p) return null; const big = n === center;
+        return <g key={n.id} transform={`translate(${p.x},${p.y})`}>
+          <Node n={n} big={big} />
+          {(() => {
+            const label = <>{n.label}{n.keeper && <tspan className="net-wk-text"> WK</tspan>}</>;
+            const a = angle.get(n.id);
+            if (big || a === undefined) return <text y={big ? 28 : 21} className={`net-label${big ? " center" : ""}`}>{label}</text>;
+            const c = Math.cos(a), sn = Math.sin(a);
+            if (Math.abs(c) < 0.35) return <text y={sn < 0 ? -13 : 22} className="net-label">{label}</text>; // top / bottom
+            return <text x={c > 0 ? 13 : -13} y={4} className={`net-label ${c > 0 ? "right" : "left"}`}>{label}</text>;
+          })()}
+        </g>; })}
+    </svg>
+    <Legend edges={edges} nodes={nodes} />
+  </figure>;
 }
 
-/** Two columns: fielders (left) to bowlers (right); width = dismissals (or drops). */
-export function Bipartite({ edges, nodes, metric }: { edges: GraphEdge[]; nodes: GraphNode[]; metric: "dismissals" | "drops" }) {
-  const left = [...new Set(edges.map((e) => e.source))], right = [...new Set(edges.map((e) => e.target))];
-  const row = 26, H = Math.max(left.length, right.length) * row + 30, W = 460, lx = 150, rx = 310;
-  const name = (id: number) => nodes.find((n) => n.id === id)?.label ?? String(id);
-  const y = (list: number[], id: number) => 22 + list.indexOf(id) * row;
-  const max = Math.max(1, ...edges.map((e) => Number(e[metric] ?? 0)));
-  return <svg className="net-svg" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Fielder to bowler web">
-    <text x={lx} y={10} className="net-col">FIELDER</text><text x={rx} y={10} className="net-col right">BOWLER</text>
-    {edges.map((e, i) => { const y1 = y(left, e.source), y2 = y(right, e.target); const v = Number(e[metric] ?? 0);
-      return <path key={i} d={`M${lx + 6},${y1} C${(lx + rx) / 2},${y1} ${(lx + rx) / 2},${y2} ${rx - 6},${y2}`}
-        strokeWidth={1 + 7 * (v / max)} className={`net-edge ${metric === "drops" ? "dropped_off" : "caught_off"}`}><title>{`${name(e.source)} → ${name(e.target)}: ${v}`}</title></path>; })}
-    {left.map((id) => <g key={`l${id}`}><circle cx={lx} cy={y(left, id)} r={5} fill="var(--amber)" /><text x={lx - 10} y={y(left, id) + 4} className="net-label left">{name(id)}</text></g>)}
-    {right.map((id) => <g key={`r${id}`}><circle cx={rx} cy={y(right, id)} r={5} fill="var(--red)" /><text x={rx + 10} y={y(right, id) + 4} className="net-label right">{name(id)}</text></g>)}
-  </svg>;
+/** Fielders (left) to bowlers (right), both ordered by total; width and shade over the shown range; a count on each edge. */
+export function Bipartite({ edges: all, nodes, metric, limit = 12 }: { edges: GraphEdge[]; nodes: GraphNode[]; metric: "dismissals" | "drops"; limit?: number }) {
+  const [showAll, setShowAll] = useState(false);
+  const edges = showAll ? all : all.slice(0, limit);
+  const total = (side: "source" | "target") => {
+    const m = new Map<number, number>();
+    for (const e of edges) m.set(e[side], (m.get(e[side]) ?? 0) + Number(e[metric] ?? 0));
+    return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
+  };
+  const left = total("source"), right = total("target");
+  const row = 28, H = Math.max(left.length, right.length) * row + 34, W = 460, lx = 150, rx = 310;
+  const node = (id: number) => nodes.find((n) => n.id === id);
+  const name = (id: number) => node(id)?.label ?? String(id);
+  const y = (list: number[], id: number) => 26 + list.indexOf(id) * row;
+  const sc = scale(edges);
+  const curve = (y1: number, y2: number, t: number) => { // the edge's cubic at t, for placing its count
+    const mt = 1 - t, xm = (lx + rx) / 2;
+    return { x: mt ** 3 * (lx + 6) + 3 * mt * mt * t * xm + 3 * mt * t * t * xm + t ** 3 * (rx - 6), y: (mt ** 3 + 3 * mt * mt * t) * y1 + (3 * mt * t * t + t ** 3) * y2 };
+  };
+  // Counts sit near their fielder, staggered along his fan of edges (his k-th edge further out), then nudged
+  // along the curve until clear of the others: the middle, where edges cross, stays free of labels.
+  const placed: { x: number; y: number }[] = [];
+  const seen = new Map<number, number>();
+  const chips = edges.map((e) => {
+    const k = seen.get(e.source) ?? 0; seen.set(e.source, k + 1);
+    const y1 = y(left, e.source), y2 = y(right, e.target);
+    const t0 = Math.min(0.2 + 0.17 * k, 0.86);
+    for (const t of [t0, t0 + 0.07, t0 - 0.07, t0 + 0.14, t0 + 0.21, t0 - 0.12, 0.5, 0.92]) {
+      if (t <= 0.08 || t >= 0.95) continue;
+      const p = curve(y1, y2, t);
+      if (placed.every((q) => Math.abs(q.x - p.x) > 28 || Math.abs(q.y - p.y) > 18)) { placed.push(p); return p; }
+    }
+    const p = curve(y1, y2, t0); placed.push(p); return p;
+  });
+  return <figure className="net-figure">
+    <svg className="net-svg" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Fielder to bowler web">
+      <text x={lx} y={12} className="net-col">FIELDER</text><text x={rx} y={12} className="net-col right">BOWLER</text>
+      {edges.map((e, i) => { const y1 = y(left, e.source), y2 = y(right, e.target); const v = Number(e[metric] ?? 0);
+        return <path key={i} d={`M${lx + 6},${y1} C${(lx + rx) / 2},${y1} ${(lx + rx) / 2},${y2} ${rx - 6},${y2}`}
+          strokeWidth={sc.width(v)} strokeOpacity={sc.opacity(v)} className={`net-edge ${metric === "drops" ? "dropped_off" : "caught_off"}`}><title>{edgeTitle(e, name)}</title></path>; })}
+      {edges.map((e, i) => <Chip key={i} x={chips[i].x} y={chips[i].y} text={edgeLabel(e)} strong={Number(e[metric] ?? 0) === sc.hi} />)}
+      {left.map((id) => { const n = node(id); return <g key={`l${id}`} transform={`translate(${lx},${y(left, id)})`}>
+        {n?.keeper ? <rect x={-6} y={-6} width={12} height={12} rx={2} fill="var(--accent)" className="net-node keeper" /> : <circle r={5.5} fill="var(--amber)" className="net-node" />}
+        <text x={-12} y={4} className="net-label left">{n?.keeper && <tspan className="net-wk-text">WK </tspan>}{name(id)}</text>
+      </g>; })}
+      {right.map((id) => <g key={`r${id}`} transform={`translate(${rx},${y(right, id)})`}><circle r={5.5} fill="var(--red)" className="net-node" /><text x={12} y={4} className="net-label right">{name(id)}</text></g>)}
+    </svg>
+    <Legend edges={edges} nodes={edges.length ? [...left, ...right].map((id) => node(id)!).filter(Boolean) : []} />
+    {all.length > limit && <button className="net-more" onClick={() => setShowAll((v) => !v)}>{showAll ? `Show the top ${limit}` : `Show all ${all.length} pairs`}</button>}
+  </figure>;
+}
+
+/** Fielders (rows) by bowlers (columns): the count in each cell, shaded over the shown range. Reads exactly at any density. */
+export function PairMatrix({ edges, nodes, metric }: { edges: GraphEdge[]; nodes: GraphNode[]; metric: "dismissals" | "drops" }) {
+  const sum = (side: "source" | "target") => {
+    const m = new Map<number, number>();
+    for (const e of edges) m.set(e[side], (m.get(e[side]) ?? 0) + Number(e[metric] ?? 0));
+    return [...m.entries()].sort((a, b) => b[1] - a[1]);
+  };
+  const rows = sum("source"), cols = sum("target");
+  const cell = new Map(edges.map((e) => [`${e.source}:${e.target}`, e]));
+  const node = (id: number) => nodes.find((n) => n.id === id);
+  const sc = scale(edges);
+  const tint = metric === "drops" ? "var(--red)" : "var(--amber)";
+  return <figure className="net-figure">
+    <div className="pair-matrix-wrap">
+      <table className="pair-matrix" style={{ "--tint": tint } as CSSProperties}>
+        <thead><tr><th scope="col" className="corner">Fielder ↓ · Bowler →</th>
+          {cols.map(([id]) => <th key={id} scope="col"><span>{node(id)?.label}</span></th>)}<th scope="col" className="total"><span>Total</span></th></tr></thead>
+        <tbody>{rows.map(([fid, total]) => { const f = node(fid); return <tr key={fid}>
+          <th scope="row">{f?.keeper && <b className="wk" title="Made a stumping for this side that season">WK</b>}{f?.label}</th>
+          {cols.map(([bid]) => { const e = cell.get(`${fid}:${bid}`); const v = Number(e?.[metric] ?? 0);
+            const share = e ? Math.round(18 + 70 * (sc.hi === sc.lo ? 1 : (v - sc.lo) / (sc.hi - sc.lo))) : 0;
+            return <td key={bid} title={e ? edgeTitle(e, (id) => node(id)?.label ?? String(id)) : undefined}
+              className={e ? (v === sc.hi ? "hit top" : "hit") : ""} style={e ? { "--share": `${share}%` } as CSSProperties : undefined}>{e ? v : ""}</td>; })}
+          <td className="total">{total}</td>
+        </tr>; })}</tbody>
+      </table>
+    </div>
+    <Legend edges={edges} nodes={[...rows, ...cols].map(([id]) => node(id)!).filter(Boolean)} />
+  </figure>;
 }
 
 function Lines({ lines }: { lines?: string[] }) {
@@ -142,6 +257,7 @@ export function NetworkPanel({ onClose, onAsk }: { onClose: () => void; onAsk: (
   const [player, setPlayer] = useState<PlayerNet | null>(null);
   const [team, setTeam] = useState("CSK");
   const [metric, setMetric] = useState<"dismissals" | "drops">("dismissals");
+  const [view, setView] = useState<"matrix" | "web">("matrix");
   const [field, setField] = useState<{ catches: GraphPayload; drops: GraphPayload } | null>(null);
   const [kind, setKind] = useState<"bowler" | "batter">("bowler");
   const [ranks, setRanks] = useState<{ note: string; rows: Record<string, string | number>[] } | null>(null);
@@ -224,10 +340,14 @@ export function NetworkPanel({ onClose, onAsk }: { onClose: () => void; onAsk: (
             <button className={metric === "dismissals" ? "active" : ""} onClick={() => setMetric("dismissals")}>Catches & stumpings</button>
             <button className={metric === "drops" ? "active" : ""} onClick={() => setMetric("drops")}>Drops</button>
           </div>
+          <div className="seg" role="group" aria-label="View">
+            <button className={view === "matrix" ? "active" : ""} onClick={() => setView("matrix")}>Matrix</button>
+            <button className={view === "web" ? "active" : ""} onClick={() => setView("web")}>Web</button>
+          </div>
         </div>
         {web && (web.gap ? <p className="stats-note">{web.gap}</p> : <section className="chat-card net-section">
           <header><h3>{team} · {metric === "drops" ? "dropped catches off each bowler" : "c / st X b Y"} · {season || "all seasons"}</h3></header>
-          <Bipartite edges={web.edges} nodes={web.nodes} metric={metric} />
+          {view === "matrix" ? <PairMatrix edges={web.edges} nodes={web.nodes} metric={metric} /> : <Bipartite edges={web.edges} nodes={web.nodes} metric={metric} limit={10} />}
           <p className="stats-note">{metric === "drops" ? "Audited drops (ipl_fielding, medium confidence or better); runs added after each drop are in the table on the match page." : "From Cricsheet's fielding records, matched to the wicket ball."}</p>
         </section>)}
       </>}

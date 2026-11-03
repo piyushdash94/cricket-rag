@@ -6,6 +6,7 @@ import { ClarifyChatCard, ScopeChatCard, StatsChatCard, StatsPanel } from "./sta
 import type { StatsCard, ClarifyCard, ScopeCard } from "./stats";
 import { OverChart, PartnershipChart, PhaseChart, PitchCard, usePar, Worm } from "./match-charts";
 import { FrontPage } from "./home";
+import { inkOn, lowOnBanner, readable, setInkTheme } from "./teamcolor";
 import { GraphChatCard, NetworkPanel } from "./network";
 import type { GraphCard } from "./network";
 import type { News } from "./home";
@@ -206,14 +207,26 @@ function tabForAction(action: UiAction): MatchTab | null {
   return null;
 }
 
+function rawTeamColor(detail: MatchDetail | null, name?: string) {
+  return detail?.match.teams.find((team) => team.abbr === name || team.name === name)?.color;
+}
+
+/** A team's colour as drawn on the theme's panel (lines, bars, text): adjusted to stay readable. */
 function teamColor(detail: MatchDetail | null, name?: string) {
-  return detail?.match.teams.find((team) => team.abbr === name || team.name === name)?.color ?? "var(--muted)";
+  const raw = rawTeamColor(detail, name);
+  return raw ? readable(raw) : "var(--muted)";
+}
+
+/** CSS variables for a team-colour fill with its own ink (badges, chips). */
+function teamFill(color?: string): CSSProperties {
+  return color ? ({ "--team": color, "--team-ink": inkOn(color) } as CSSProperties) : {};
 }
 
 // ---------------------------------------------------------------- app
 
 export default function Home() {
   const [theme, setTheme] = useState<Theme>("floodlit");
+  setInkTheme(theme); // before any child reads a team colour in this render
   const dark = THEMES.find((item) => item.id === theme)?.dark ?? false;
   const themeMenu = useRef<HTMLDetailsElement>(null);
   const [seasons, setSeasons] = useState<number[]>(FALLBACK_SEASONS);
@@ -533,7 +546,7 @@ export default function Home() {
           {archiveLoading && Array.from({ length: 4 }).map((_, index) => <span className="ticker-card skeleton" key={index} />)}
           {!archiveLoading && matches.map((match, index) => <button className={`ticker-card${selected?.id === match.id ? " selected" : ""}`} style={{ "--i": Math.min(index, 12) } as CSSProperties} key={`t-${match.id}`} onClick={() => void openMatch(match)}>
             <small>{match.label && match.label !== "Match" ? match.label : "Result"} · {formatDate(match.date)}</small>
-            {match.teams.map((team) => <span key={team.abbr}><i style={{ background: team.color }} /><strong>{team.abbr}</strong><b>{scoreLabel(team)}</b></span>)}
+            {match.teams.map((team) => <span key={team.abbr}><i style={{ background: readable(team.color) }} /><strong>{team.abbr}</strong><b>{scoreLabel(team)}</b></span>)}
             <em>{match.status_text}</em>
           </button>)}
           {!archiveLoading && !matches.length && <span className="ticker-empty">{archiveError ? <>Archive offline <button onClick={() => void loadArchive(season, search)}>Try again</button></> : search ? `Nothing in IPL ${season} matches “${search}”` : "No matches"}</span>}
@@ -597,7 +610,7 @@ export default function Home() {
           <div className="match-hero">
             <div className="hero-actions"><button className="back-link" onClick={closeMatch}>← Close</button><button className="share-button" onClick={shareMatch}>Copy summary + link</button></div>
             <div className="match-meta"><span>{selected.series_name}{selected.label && selected.label !== "Match" ? ` · ${selected.label}` : ""}</span><span>{formatDate(selected.date)}</span><span>{selected.venue}</span></div>
-            <div className="match-scoreboard">{selected.teams.map((team) => <div className="score-team" key={team.abbr}><i style={{ borderColor: team.color }}>{team.abbr}</i><span><small>{team.name}</small><strong>{scoreLabel(team)}</strong><em>{team.score_info}</em></span></div>)}</div>
+            <div className="match-scoreboard" style={{ "--team-a": selected.teams[0]?.color ?? "transparent", "--team-b": selected.teams[1]?.color ?? "transparent" } as CSSProperties}>{selected.teams.map((team) => <div className={`score-team${lowOnBanner(team.color) ? " low" : ""}${detail?.match.status_text?.startsWith(team.abbr) ? " won" : ""}`} key={team.abbr} style={teamFill(team.color)}><i>{team.abbr}</i><span><small>{team.name}</small><strong>{scoreLabel(team)}</strong><em>{team.score_info}</em></span></div>)}</div>
             <div className="result-strip"><span>Result</span><strong>{selected.status_text || (detailLoading ? "Loading…" : "Unavailable")}</strong></div>
           </div>
           <div className="detail-tabs" role="tablist" aria-label="Match sections">{TABS.map((tab) => <button role="tab" aria-selected={matchTab === tab.id} className={matchTab === tab.id ? "active" : ""} key={tab.id} onClick={() => setMatchTab(tab.id)}>{tab.label}</button>)}</div>
@@ -605,7 +618,7 @@ export default function Home() {
             {detailLoading && <div className="detail-loading"><span /><strong>Loading this match…</strong><small>Scorecard → deliveries → commentary → momentum</small></div>}
             {!detailLoading && !detail && <div className="error-state"><strong>Match detail unavailable</strong><p>Try again when the data source responds.</p><button onClick={() => void openMatch(selected, false)}>Retry</button></div>}
             {detail && matchTab === "overview" && <Overview detail={detail} onTab={setMatchTab} />}
-            {detail && matchTab === "scorecard" && <Scorecard innings={detail.innings} />}
+            {detail && matchTab === "scorecard" && <Scorecard innings={detail.innings} detail={detail} />}
             {detail && matchTab === "balls" && <BallByBall detail={detail} balls={visibleBalls} filter={inningFilter} onFilter={setInningFilter} />}
             {detail && matchTab === "momentum" && <Momentum detail={detail} onAsk={(text) => void sendChat(undefined, text)} />}
           </div>
@@ -662,7 +675,7 @@ function ListChatCard({ card, onOpen }: { card: ListCard; onOpen: (item: ListCar
 
 // ---------------------------------------------------------------- workspace tabs
 
-type StoryLine = { kicker: string; text: string };
+type StoryLine = { kicker: string; text: string; team?: string };
 
 // Up to `count` items spread across the list, keeping match order.
 function spread<T>(items: T[], count: number) {
@@ -683,7 +696,7 @@ function buildMatchStory(detail: MatchDetail): { lines: StoryLine[]; moments: Ba
     let text = `${inning.team} made ${inning.runs}/${inning.wickets} in ${inning.overs} overs`;
     if (bat) text += `, led by ${bat.name} (${bat.runs}${bat.not_out ? "*" : ""} off ${bat.balls})`;
     if (bowl && bowl.wickets > 0) text += `; ${bowl.name} took ${bowl.wickets}/${bowl.runs}${fielding ? ` for ${fielding}` : ""}`;
-    lines.push({ kicker: inning.number === 1 ? "First innings" : "Chase", text: `${text}.` });
+    lines.push({ kicker: inning.number === 1 ? "First innings" : "Chase", text: `${text}.`, team: inning.team });
   }
   const decisive = analytics.shifts?.find((shift) => shift.decisive);
   if (decisive) lines.push({ kicker: "Turning point", text: `${SHIFT_LABELS[decisive.type]} in the ${decisive.innings_team} innings, overs ${decisive.from}–${decisive.to}: ${decisive.headline} (${decisive.score_before} → ${decisive.score_after}).` });
@@ -743,7 +756,7 @@ function Overview({ detail, onTab }: { detail: MatchDetail; onTab: (tab: MatchTa
   const { lines, moments } = useMemo(() => buildMatchStory(detail), [detail]);
   return <div className="overview-grid">
     <article className="detail-card story-card"><div className="card-title"><div><p className="section-kicker">MATCH STORY</p><h3>How it was won</h3></div><span className="story-badge" title="Built only from scorecard, deliveries and commentary">Grounded recap</span></div>
-      <ol className="story-lines">{lines.map((line) => <li key={line.kicker}><span>{line.kicker}</span><p>{line.text}</p></li>)}</ol>
+      <ol className="story-lines">{lines.map((line) => <li key={line.kicker} className={line.team ? "team-line" : undefined} style={line.team ? { "--team-line": teamColor(detail, line.team) } as CSSProperties : undefined}><span>{line.kicker}</span><p>{line.text}</p></li>)}</ol>
       {moments.length > 0 && <div className="key-moments"><p className="section-kicker">KEY MOMENTS</p>{moments.map((ball) => <div className={`moment${ball.wicket ? " wicket" : " boundary"}`} key={ball.id}><b>{inningsTag(detail, ball)} {ball.label}</b><em>{ball.event}</em><span><strong>{ball.title}</strong><RichText text={ball.commentary || ball.text} /></span></div>)}<button className="wide-action" onClick={() => onTab("balls")}>Full delivery timeline →</button></div>}
     </article>
     <DropsCard detail={detail} />
@@ -759,8 +772,8 @@ function Overview({ detail, onTab }: { detail: MatchDetail; onTab: (tab: MatchTa
   </div>;
 }
 
-function Scorecard({ innings }: { innings: Innings[] }) {
-  return <div className="scorecard-stack">{innings.map((inning) => <article className="detail-card scorecard-card" key={inning.number}><div className="innings-title"><span>{inning.number}</span><div><p className="section-kicker">{inning.number === 1 ? "FIRST INNINGS" : "SECOND INNINGS"}</p><h3>{inning.team}</h3></div><strong>{inning.runs}/{inning.wickets} <small>{inning.overs} ov · extras {inning.extras}</small></strong></div>
+function Scorecard({ innings, detail }: { innings: Innings[]; detail: MatchDetail }) {
+  return <div className="scorecard-stack">{innings.map((inning) => <article className="detail-card scorecard-card" key={inning.number}><div className="innings-title" style={teamFill(rawTeamColor(detail, inning.team))}><span>{teamAbbr(detail, inning.team) ?? inning.number}</span><div><p className="section-kicker">{inning.number === 1 ? "FIRST INNINGS" : "SECOND INNINGS"}</p><h3>{inning.team}</h3></div><strong>{inning.runs}/{inning.wickets} <small>{inning.overs} ov · extras {inning.extras}</small></strong></div>
     <div className="table-wrap"><table><thead><tr><th>Batter</th><th>R</th><th>B</th><th>4s</th><th>6s</th><th>SR</th></tr></thead><tbody>{inning.batters.map((batter) => <tr key={batter.name}><td><strong>{batter.name}{batter.not_out ? "*" : ""}</strong><small>{dismissal(batter.dismissal) || (batter.not_out ? "not out" : "")}</small></td><td><b>{batter.runs}</b></td><td>{batter.balls}</td><td>{batter.fours}</td><td>{batter.sixes}</td><td>{batter.strike_rate}</td></tr>)}</tbody></table></div>
     <div className="table-wrap bowling-table"><table><thead><tr><th>Bowler</th><th>O</th><th>M</th><th>R</th><th>W</th><th>Econ</th><th>Dots</th></tr></thead><tbody>{inning.bowlers.map((bowler) => <tr key={bowler.name}><td><strong>{bowler.name}</strong></td><td>{bowler.overs}</td><td>{bowler.maidens}</td><td>{bowler.runs}</td><td><b>{bowler.wickets}</b></td><td>{bowler.economy}</td><td>{bowler.dots}</td></tr>)}</tbody></table></div>
   </article>)}</div>;
@@ -819,7 +832,7 @@ function Momentum({ detail, onAsk }: { detail: MatchDetail; onAsk: (text: string
     <article className="detail-card"><div className="card-title"><div><p className="section-kicker">MOMENTUM SHIFTS</p><h3>Where the match moved</h3></div><button className="ask-button" onClick={() => onAsk("Where did this match turn, and why?")}>Ask Pandit to explain ↗</button></div>
       <p className="card-copy">Detected from every delivery: wicket clusters, scoring bursts, squeezes, chase-equation swings, and dropped catches.</p>
       {shifts.length ? <ol className="shift-list">{shifts.map((shift, index) => <li key={`${shift.inning}-${shift.from}-${index}`} className={shift.decisive ? "decisive" : ""} style={{ "--i": index } as CSSProperties}>
-        <span className="shift-type" style={{ color: teamColor(detail, shift.innings_team) }}>{SHIFT_LABELS[shift.type]}{shift.decisive ? " · turning point" : ""}</span>
+        <span className="shift-type" style={teamFill(rawTeamColor(detail, shift.innings_team))}>{SHIFT_LABELS[shift.type]}{shift.decisive ? " · turning point" : ""}</span>
         <div><strong>{shift.innings_team} innings, overs {shift.from}–{shift.to}</strong><p>{shift.headline}. {shift.score_before} → {shift.score_after}.</p>{shift.evidence?.filter((item) => item.text).slice(0, 2).map((item) => <q key={item.label}>{item.label}: {item.text}</q>)}</div>
       </li>)}</ol> : <p className="card-copy">Momentum shifts need delivery-level data, which this match does not have.</p>}
     </article>

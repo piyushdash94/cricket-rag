@@ -232,3 +232,18 @@ def test_pagerank_matches_networkx_reference():
     # reference values from nx.pagerank(g, weight="weight") with scipy installed
     ref = {1: 0.3577, 2: 0.2655, 3: 0.3392, 4: 0.0375}
     assert all(abs(pr[k] - v) < 5e-4 for k, v in ref.items()), pr
+
+
+def test_keeper_is_whoever_stumped_for_that_side_that_season(graph):
+    from cricrag.graph import tools as gt
+
+    con, _ = graph
+    assert con.execute("select player_id, team, season from keepers").fetchall() == [(12, "CSK", "2024")]
+    ev = gt.catch_pairs(con, team="CSK")
+    kept = {r["fielder"]: r["keeper"] for r in ev.rows}
+    assert kept == {"MS Dhoni": True}
+    assert all(
+        "(wicketkeeper)" in line for line in ev.lines if line.startswith("caught or stumped by MS Dhoni")
+    )
+    assert next(n for n in ev.nodes if n["label"] == "MS Dhoni")["keeper"] is True
+    assert gt.catch_pairs(con, team="MI").rows[0]["keeper"] is False  # Hardik caught, never stumped

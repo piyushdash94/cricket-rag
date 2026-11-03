@@ -210,6 +210,12 @@ def bunnies(
 # ------------------------------------------------------------------ fielding
 
 
+# the fielder kept wicket for that side in a season of these rows (made a stumping that season);
+# keepers is unique per (player, team, season), so the join never duplicates a row
+_KEPT = "bool_or(k.player_id IS NOT NULL) AS kept"
+_KEEPERS = "LEFT JOIN keepers k ON k.player_id = d.fielder_id AND k.team = d.team AND k.season = d.season"
+
+
 def catch_pairs(con, fielder: int | None = None, bowler: int | None = None, team: str | None = None,
                 seasons=None, top: int = 8) -> Evidence:  # fmt: skip
     """'c X b Y' dismissals (caught + stumped), filtered by any of fielder, bowler, fielding team, seasons."""
@@ -221,9 +227,9 @@ def catch_pairs(con, fielder: int | None = None, bowler: int | None = None, team
             params.append(val)
     rows = con.execute(
         f"""SELECT d.fielder_id, f.name, d.bowler_id, b.name, sum(d.n)::INT n,
-                   sum(CASE WHEN d.kind = 'stumped' THEN d.n ELSE 0 END)::INT st
+                   sum(CASE WHEN d.kind = 'stumped' THEN d.n ELSE 0 END)::INT st, {_KEPT}
             FROM fielding_dismissal d JOIN people f ON f.player_id = d.fielder_id
-            JOIN people b ON b.player_id = d.bowler_id
+            JOIN people b ON b.player_id = d.bowler_id {_KEEPERS}
             WHERE {" AND ".join(where)} GROUP BY 1, 2, 3, 4 ORDER BY n DESC, 2 LIMIT {int(top)}""",
         params,
     ).fetchall()
@@ -233,11 +239,12 @@ def catch_pairs(con, fielder: int | None = None, bowler: int | None = None, team
         ev.gap = f"No caught or stumped dismissals match that {_scope(seasons)}."
         return ev
     _tie(ev, [f"{r[1]} off {r[3]}" for r in rows], [r[4] for r in rows], "dismissals")
-    for fid, fn, bid, bn, n, st in rows:
+    for fid, fn, bid, bn, n, st, kept in rows:
         extra = f" ({st} stumpings)" if st else ""
-        ev.add(f"caught or stumped by {fn} off {bn}: {_n(n, 'dismissal')}{extra} {_scope(seasons)}",
-               dict(fielder=fn, bowler=bn, dismissals=n, stumpings=st))  # fmt: skip
-        ev.node(fid, fn, "fielder")
+        wk = " (wicketkeeper)" if kept else ""
+        ev.add(f"caught or stumped by {fn}{wk} off {bn}: {_n(n, 'dismissal')}{extra} {_scope(seasons)}",
+               dict(fielder=fn, bowler=bn, dismissals=n, stumpings=st, keeper=bool(kept)))  # fmt: skip
+        ev.node(fid, fn, "fielder", keeper=bool(kept))
         ev.node(bid, bn, "bowler")
         ev.edges.append(
             {"source": fid, "target": bid, "kind": "caught_off", "dismissals": n, "stumpings": st}
@@ -255,8 +262,9 @@ def drops(con, fielder: int | None = None, bowler: int | None = None, team: str 
             where.append(f"{col} = ?")
             params.append(val)
     rows = con.execute(
-        f"""SELECT d.fielder_id, f.name, d.bowler_id, b.name, sum(d.n)::INT n, sum(d.runs_after)::INT ra
+        f"""SELECT d.fielder_id, f.name, d.bowler_id, b.name, sum(d.n)::INT n, sum(d.runs_after)::INT ra, {_KEPT}
             FROM dropped d JOIN people f ON f.player_id = d.fielder_id JOIN people b ON b.player_id = d.bowler_id
+            {_KEEPERS}
             WHERE {" AND ".join(where)} GROUP BY 1, 2, 3, 4 ORDER BY n DESC, ra DESC LIMIT {int(top)}""",
         params,
     ).fetchall()
@@ -265,10 +273,11 @@ def drops(con, fielder: int | None = None, bowler: int | None = None, team: str 
         ev.gap = f"No audited dropped catches match that {_scope(seasons)}."
         return ev
     _tie(ev, [f"{r[1]} off {r[3]}" for r in rows], [r[4] for r in rows], "drops")
-    for fid, fn, bid, bn, n, ra in rows:
-        ev.add(f"{fn} dropped {_n(n, 'catch')} off {bn}'s bowling {_scope(seasons)}; the batters added {ra} runs after",
-               dict(fielder=fn, bowler=bn, drops=n, runs_after=ra))  # fmt: skip
-        ev.node(fid, fn, "fielder")
+    for fid, fn, bid, bn, n, ra, kept in rows:
+        wk = " (wicketkeeper)" if kept else ""
+        ev.add(f"{fn}{wk} dropped {_n(n, 'catch')} off {bn}'s bowling {_scope(seasons)}; the batters added {ra} runs after",
+               dict(fielder=fn, bowler=bn, drops=n, runs_after=ra, keeper=bool(kept)))  # fmt: skip
+        ev.node(fid, fn, "fielder", keeper=bool(kept))
         ev.node(bid, bn, "bowler")
         ev.edges.append({"source": fid, "target": bid, "kind": "dropped_off", "drops": n, "runs_after": ra})
     return ev
