@@ -100,6 +100,14 @@ STYLE = re.compile(
     re.I,
 )
 
+# "how does Rohit bat against left-arm spin": a player against a bowler or batter type is a stats matchup,
+# not a story (it once went to commentary search and quoted overs from pacers).
+TYPE_VS = re.compile(
+    r"\b(?:against|vs?\.?|versus)\s+(?:the\s+)?(?:(?:left|right)[- ]arm\s+)?"
+    r"(?:spin\w*|pace\w*|seam\w*|fast\w*|quick\w*|medium\w*|slow\w*|left[- ]hand\w*|right[- ]hand\w*|"
+    r"lefties|left[- ]arm\w*|right[- ]arm\w*|wrist[- ]?spin\w*|leg[- ]?spin\w*|off[- ]?spin\w*)",
+    re.I,
+)
 
 EVENT_OF = {"partnership": "partnership", "hat_tricks": "hattrick", "hundreds": "hundred", "fifties": "fifty",
             "wickets": "wicket", "dismissals": "wicket", "drops": "drop", "maidens": "maiden",
@@ -366,6 +374,9 @@ class Pandit:
         if moments and ev.DESC.search(question) and not one and order[0] != "event":
             order = ["event", *[p for p in order if p != "event"]]  # "costliest drops": rank single moments
             trace.append({"step": "route", "rule": "moment_ranking_to_events"})
+        if frame.players and TYPE_VS.search(question) and order[:2] != ["stats", "finder"]:
+            order = ["stats", "finder", *[p for p in order if p not in ("stats", "finder")]]
+            trace.append({"step": "route", "rule": "player_v_bowling_type_to_stats"})  # a matchup is numbers
         trace.append({"step": "intent", **it.as_dict(), "routes": order})
         prior, gap_reply, missed = None, None, False
         for prog in order:

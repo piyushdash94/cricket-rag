@@ -110,7 +110,7 @@ def test_footnote_states_sample_filter_and_qualification():
     sql = "select ... where batter='MS Dhoni' and bowl_arm = 'left' and bowl_kind = 'pace'"
     res = {"sql": sql, "cols": ["runs", "balls", "dismissals", "average"], "rows": [(976, 572, 25, 39.04)]}
     assert footnote("how much did MS dhoni average against left arm fast bowlers?", res) == (
-        "Sample: 976 runs, 572 balls, 25 dismissals. Bowlers: left-arm pace of every speed (not only fast)."
+        "Sample: 976 runs, 572 balls, 25 dismissals. Bowlers: left-arm pace."
     )
     sql = "select ... where year = 2022 and bowl_kind = 'spin' and bowl_arm = 'left' having balls >= 60"
     res = {
@@ -122,4 +122,120 @@ def test_footnote_states_sample_filter_and_qualification():
         footnote(Q1, res)
         == "Top row: 100 runs, 65 balls. Bowlers: left-arm spin. Qualification: at least 60 balls."
     )
-    assert footnote("who hit the most sixes in 2016?", res) == ""
+    assert (
+        footnote(
+            "who hit the most sixes in 2016?", {**res, "sql": "select batter, sum(is_six::int) from balls"}
+        )
+        == ""
+    )
+
+
+def test_bowler_types_are_pace_or_spin_with_the_arm():
+    from types import SimpleNamespace
+
+    from cricrag.finder import guard
+    from cricrag.styles import classify
+
+    assert classify("Right arm Medium fast") == ("right arm medium fast", "pace", "right")
+    assert classify("left-arm fast") == ("left-arm fast", "pace", "left")
+    assert classify("Slow left-arm orthodox")[1:] == ("spin", "left")
+    assert classify("legbreak googly")[1] == "spin"
+    assert classify("") == ("does not bowl", "none", "")
+    frame = SimpleNamespace(players=["MS Dhoni"], teams=[], years=[], question="Dhoni v left-arm fast")
+    assert "bowl_kind" in guard(
+        "select 1 from balls where batter='MS Dhoni' and bowl_style='left-arm fast'", frame
+    )
+    assert (
+        guard("select 1 from balls where batter='MS Dhoni' and bowl_kind='pace' and bowl_arm='left'", frame)
+        is None
+    )
+
+
+def test_fill_gives_every_player_a_hand_and_a_bowling_type(tmp_path):
+    from cricrag.styles import fill
+
+    db = tmp_path / "a.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("""create table player_styles (player_id bigint, name varchar, bat_hand varchar, bowl_style varchar,
+                   bowl_kind varchar, bowl_arm varchar, source varchar)""")
+    con.execute("""insert into player_styles values (1, 'Rishabh Pant', 'left', '', '', '', 'espn'),
+        (2, 'Ben Rohrer', 'left', '', '', '', 'espn'), (3, 'Nitin Menon', 'right', '', '', '', 'espn')""")
+    con.execute("create table balls as select 1::bigint batter_id, 9::bigint bowler_id union all select 9, 2")
+    con.execute("create table cs_batting_card as select 1::bigint player_id")
+    con.execute("create table cs_bowling_card as select 2::bigint player_id")
+    con.execute(
+        "insert into player_styles values (9, 'A Bowler', 'right', 'right-arm fast', 'pace', 'right', 'espn')"
+    )
+    con.close()
+    manual = tmp_path / "m.csv"
+    manual.write_text("player_id,name,bat_hand,bowl_style,source\n2,Ben Rohrer,left,right-arm medium,wiki\n")
+    assert fill(db, manual) == {
+        "manual": 1,
+        "marked_does_not_bowl": 1,
+        "no_batting_hand": [],
+        "no_bowling_type": [],
+    }
+    con = duckdb.connect(str(db), read_only=True)
+    got = dict(con.execute("select name, bowl_kind from player_styles").fetchall())
+    assert got == {
+        "Rishabh Pant": "none",
+        "Ben Rohrer": "pace",
+        "Nitin Menon": "",
+        "A Bowler": "pace",
+    }  # umpire untouched
+
+
+def test_player_against_a_bowling_type_is_a_matchup():
+    from cricrag.agent.pandit import TYPE_VS
+
+    for q in (
+        "how does Rohit Sharma bat against left arm spin?",
+        "Kohli vs pace in the powerplay",
+        "Dhoni against left-arm fast bowlers",
+        "Bumrah against left-handers",
+    ):
+        assert TYPE_VS.search(q), q
+    assert not TYPE_VS.search("how did Rohit Sharma do against CSK?")
+    assert not TYPE_VS.search("Kohli v Bumrah")
+
+
+def test_matchup_dismissals_are_bowler_credited_and_counted_per_match():
+    from types import SimpleNamespace
+
+    from cricrag.finder import guard
+
+    f = SimpleNamespace(players=["Rohit Sharma"], teams=[], years=[], question="Rohit v left-arm spin")
+    base = "select sum(runs_bat) from balls where batter = 'Rohit Sharma' and bowl_kind = 'spin' and bowl_arm = 'left'"
+    assert "restarts in every match" in guard(
+        base.replace(
+            "sum(runs_bat)", "count(distinct case when player_out = 'Rohit Sharma' then sequence end)"
+        ),
+        f,
+    )
+    assert "bowler_wicket" in guard(
+        base.replace("sum(runs_bat)", "sum((player_out = 'Rohit Sharma')::int)"), f
+    )
+    ok = base.replace("sum(runs_bat)", "sum((bowler_wicket and player_out = 'Rohit Sharma')::int)")
+    assert guard(ok, f) is None
+    assert guard(base.replace("sum(runs_bat)", "count(distinct (match_id, inning, sequence))"), f) is None
+
+
+def test_footnote_on_a_matchup_without_a_rate_word():
+    from cricrag.finder import footnote
+
+    sql = "select ... where batter = 'Rohit Sharma' and bowl_kind = 'spin' and bowl_arm = 'left'"
+    res = {
+        "sql": sql,
+        "cols": ["runs", "balls", "dismissals", "strike_rate"],
+        "rows": [(895, 795, 22, 112.58)],
+    }
+    assert footnote("how does Rohit Sharma bat against left arm spin?", res) == (
+        "Sample: 895 runs, 795 balls, 22 dismissals. Bowlers: left-arm spin."
+    )
+
+
+def test_batter_matchup_must_return_dismissals():
+    sql = "select sum(runs_bat) runs from balls where batter = 'Rohit Sharma' and bowl_kind = 'spin'"
+    q = "how does Rohit Sharma bat against spin?"
+    assert "dismissals" in sample_problem(q, ["runs", "balls", "sr"], [(895, 795, 112.58)], sql)
+    assert sample_problem(q, ["runs", "balls", "dismissals", "sr"], [(895, 795, 22, 112.58)], sql) is None

@@ -43,7 +43,7 @@ VIEWS = [
     .replace("VIEW b AS", "VIEW balls AS")
     .replace(
         "m.season,",
-        "m.season, year(m.start_date) AS year, bs.bowl_kind, bs.bowl_style, bs.bowl_arm, bh.bat_hand,",
+        "m.season, year(m.start_date) AS year, bs.bowl_kind, bs.bowl_arm, bh.bat_hand,",
     )
     .replace(
         "JOIN a.matches m USING (match_id)",
@@ -59,7 +59,7 @@ innings(team innings, super overs excluded): match_id, season, year, stage, inni
 batting(batter innings): match_id, season, year, stage, inning, team, opponent, position, player, runs, balls, fours, sixes, is_out BOOL, dismissal
 bowling(bowler innings): match_id, season, year, stage, inning, team (bowling side), opponent, player, balls, conceded, wickets, dots, wides, noballs
 balls(delivery): match_id, year, stage, inning, over_number (1-20), ball_in_over, sequence, bat (batting team), bowl (bowling team), phase ('powerplay' overs 1-6|'middle' 7-15|'death' 16-20), batter, non_striker, bowler, runs_total, runs_bat, extras, wide_runs, noball_runs, charged (runs charged to the bowler: no byes/leg byes), is_legal, is_wide, is_noball, is_four, is_six, is_wicket, bowler_wicket, dismissal_type, player_out,
-  bowl_kind ('spin'|'pace'), bowl_style (e.g. 'slow left-arm orthodox', 'left-arm wrist-spin', 'right-arm offbreak', 'legbreak', 'right-arm fast'), bowl_arm ('left'|'right'), bat_hand ('left'|'right')
+  bowl_kind ('pace'|'spin'), bowl_arm ('left'|'right'), bat_hand ('left'|'right')
 events(notable moments): type ('wicket','fifty','hundred','partnership','haul','hattrick','maiden','big_over','drop','misfield','overthrow','finish','shift'), match_id, season, year, title, stage, inning, over, label, batting_team, bowling_team, phase, player, player2, fielder, detail, value, value2, side, note, close
   drop: player = fielder (NULL if unnamed), player2 = batter, note = bowler, value2 = batter's score then, value = runs he added after
   shift: detail = 'wicket_cluster'|'scoring_burst'|'squeeze'|'chase_swing'|'missed_chance', value = swing in runs, side = team it favoured, close = decisive shift of the match"""
@@ -79,11 +79,12 @@ Rules (data conventions):
   career in time order (join matches for start_date; then inning, sequence); the answer is the balls/innings count at
   the first row where the running total reaches N. Never answer with a rate or N/rate.
 - Rates (economy, average, strike rate) in a ranking need a sample: at least 60 balls unless the question sets one.
-- Bowler types: spinners = bowl_kind 'spin'; left-arm spinners = bowl_kind 'spin' AND bowl_arm 'left';
-  left-arm pacers = bowl_kind 'pace' AND bowl_arm 'left'; left-handers = bat_hand 'left'.
+- Bowler types are two classes only: pace (fast, quick, medium, seam: every speed) = bowl_kind 'pace';
+  spin (slow, spinners of any kind) = bowl_kind 'spin'. Add bowl_arm for left-arm/right-arm:
+  left-arm fast bowlers = bowl_kind 'pace' AND bowl_arm 'left'; left-handers = bat_hand 'left'.
 - A batter against a bowler type (spin, left-arm, legbreak...) or a bowler against left/right-handers is ball-level:
-  sum runs_bat and non-wide balls in balls with the style filter; dismissals = rows where player_out is that batter
-  (bowler_wicket for the bowler's share). Never use whole-innings rows from batting for these.
+  sum runs_bat and non-wide balls in balls with the style filter; dismissals = rows with bowler_wicket AND
+  player_out = that batter (run outs are not the bowler type's). Never use whole-innings rows from batting for these.
 - Bowler wickets = bowler_wicket (run outs are not the bowler's); runs conceded = charged (byes and leg byes excluded).
 - "minimum N", "at least N", "min N" in the question is a HAVING filter on the count it names.
 - Strike rate = 100*runs/balls, economy = 6*conceded/balls, average = runs/dismissals.
@@ -109,6 +110,16 @@ def guard(sql: str, frame: Frame) -> str | None:
         return "must be a single SELECT (or WITH ... SELECT) statement"
     if BAN.search(s.replace("'drop'", "")):
         return "only reads are allowed"
+    if re.search(r"\bis_legal\b", s, re.I) and re.search(
+        r"\bbatter\b\s*(=|in\b|ilike\b)|group by\s+(\w+\.)?batter\b", s, re.I
+    ):  # a no-ball is a ball faced (Kohli v left-arm pace came out 1433 off 1019, not 1437 off 1023)
+        return "balls faced exclude wides only: count NOT is_wide, never is_legal, for a batter"
+    if re.search(r"count\s*\(\s*distinct\b(?:(?!\bmatch_id\b)[^)])*\bsequence\b", s, re.I):
+        return "sequence restarts in every match: count rows, or DISTINCT (match_id, inning, sequence)"
+    if STYLE_FILTER.search(s) and re.search(r"\bplayer_out\b", s) and not re.search(r"\bbowler_wicket\b", s):
+        return "a batter's dismissals against a bowler type are bowler_wicket AND player_out = the batter (run outs are not the bowler's)"
+    if "bowl_style" in s.lower():  # two classes only: pace and spin (with the arm), never a finer style
+        return "filter bowler types with bowl_kind ('pace' or 'spin') and bowl_arm only"
     low = s.lower()
     miss = [p for p in frame.players if p.split()[-1].lower() not in low]
     miss += [t for t in frame.teams if t.lower() not in low]
@@ -135,12 +146,20 @@ def qualifier(question: str) -> int | None:
     return max((int(n) for n in ASKED_BALLS.findall(question)), default=MIN_BALLS)
 
 
-def sample_problem(question: str, cols: list[str], rows: list[tuple]) -> str | None:
+def sample_problem(question: str, cols: list[str], rows: list[tuple], sql: str = "") -> str | None:
     """A rate answer must carry what it is built on, and a rate ranking must be qualified.
 
     'Best strike rate v left-arm spin in 2022' once returned Obed McCoy, 7 off 2 balls (350), and an average came
     back as a bare 39.04 with no runs, balls or dismissals to say how big the sample was.
     """
+    if (
+        STYLE_FILTER.search(sql)
+        and re.search(r"\bbatter\s*(=|ilike\b)", sql, re.I)
+        and not any(re.search(r"dismiss|outs?$|wicket", c, re.I) for c in cols)
+    ):  # a batter against a bowler type: runs, balls and dismissals are the answer
+        return (
+            "the query must also return the batter's dismissals (bowler_wicket AND player_out = the batter)"
+        )
     if not (m := RATE.search(question)):
         return None
     counts = [
@@ -166,9 +185,7 @@ def sample_problem(question: str, cols: list[str], rows: list[tuple]) -> str | N
     return None
 
 
-STYLE_FILTER = re.compile(
-    r"\b(bowl_kind|bowl_arm|bowl_style|bat_hand)\s*(=|ILIKE|IN)\s*('[^']*'|\([^)]*\))", re.I
-)
+STYLE_FILTER = re.compile(r"\b(bowl_kind|bowl_arm|bat_hand)\s*(=|ILIKE|IN)\s*('[^']*'|\([^)]*\))", re.I)
 
 
 def notes(question: str, sql: str, cols: list[str]) -> str:
@@ -184,16 +201,10 @@ def notes(question: str, sql: str, cols: list[str]) -> str:
     return "; ".join(out)
 
 
-SUBTYPE = re.compile(
-    r"\b(fast|quick|medium|orthodox|wrist|chinaman|leg[- ]?spin\w*|off[- ]?spin\w*|leg ?break|off ?break)\b",
-    re.I,
-)
-
-
 def footnote(question: str, res: dict[str, Any]) -> str:
-    """'Sample: 976 runs, 572 balls, 25 dismissals. Bowlers: left-arm pace of every speed.' Built from the result
+    """'Sample: 976 runs, 572 balls, 25 dismissals. Bowlers: left-arm pace.' Built from the result
     and the SQL, not by the writer, so a rate never reaches the reader without what it rests on."""
-    if not RATE.search(question) or not res.get("rows"):
+    if not (RATE.search(question) or STYLE_FILTER.search(res.get("sql", ""))) or not res.get("rows"):
         return ""
     cols, top = res["cols"], res["rows"][0]
     counts = [
@@ -204,12 +215,7 @@ def footnote(question: str, res: dict[str, Any]) -> str:
     out = [("Top row: " if len(res["rows"]) > 1 else "Sample: ") + ", ".join(counts) + "."] if counts else []
     f = {m.group(1).lower(): m.group(3).strip("'").lower() for m in STYLE_FILTER.finditer(res.get("sql", ""))}
     if kind := f.get("bowl_kind"):
-        who = f"{f['bowl_arm']}-arm {kind}" if f.get("bowl_arm") else kind
-        if "bowl_style" not in f and (sub := SUBTYPE.search(question)):
-            who += f" of every {'speed' if kind == 'pace' else 'type'} (not only {sub.group(1).lower()})"
-        out.append(f"Bowlers: {who}.")
-    elif style := f.get("bowl_style"):
-        out.append(f"Bowlers: {style}.")
+        out.append(f"Bowlers: {f['bowl_arm'] + '-arm ' if f.get('bowl_arm') else ''}{kind}.")
     if (need := qualifier(question)) and any(BALLS_COL.search(c) for c in cols):
         out.append(f"Qualification: at least {need} balls.")
     return " ".join(out)
@@ -263,7 +269,7 @@ def find(llm, con, frame: Frame, hint: dict | None = None) -> dict[str, Any]:
             ),
         },
     ]
-    for _ in range(2):
+    for _ in range(3):  # each guard can cost a retry; a third attempt only runs after two rejections
         out = (llm.chat(msgs, max_tokens=1200)["message"].get("content") or "").strip()
         plan = parse(out)
         sql = plan.get("sql")
@@ -282,7 +288,7 @@ def find(llm, con, frame: Frame, hint: dict | None = None) -> dict[str, Any]:
                 cols, rows = run(con, sql)
                 if not rows or (len(rows) == 1 and all(v in (0, None) for v in rows[0])):
                     problem = "the query matched nothing; check filters and spellings (names/venues: use ILIKE '%word%')"
-                elif not (problem := sample_problem(frame.question, cols, rows)):
+                elif not (problem := sample_problem(frame.question, cols, rows, sql)):
                     out_ = {"kind": "rows", "sql": sql, "cols": cols, "rows": rows}
                     if note := notes(frame.question, sql, cols):
                         out_["note"] = note

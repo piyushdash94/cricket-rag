@@ -86,6 +86,17 @@ def build_events():
     console.print(f"[green]{n} events in {time.time() - t:.0f}s")
 
 
+@app.command("fill-styles")
+def fill_styles():
+    """Give every player a batting hand and a bowling type (pace, spin, or none) in the archive's player_styles."""
+    from cricrag.styles import fill
+
+    report = fill(settings().db_path)
+    console.print(report)
+    if report["no_batting_hand"] or report["no_bowling_type"]:
+        raise typer.Exit(1)
+
+
 @app.command("build-graph")
 def build_graph():
     """Build data/graph.duckdb: canonical player ids, then player-to-player edge tables, with parity checks."""

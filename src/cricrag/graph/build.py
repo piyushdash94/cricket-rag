@@ -169,11 +169,17 @@ def graph_checks(con) -> dict[str, tuple[int, int, bool]]:
         a = int(con.execute(edge_sql).fetchone()[0] or 0)
         b = int(con.execute(base_sql).fetchone()[0] or 0)
         out[name] = (a, b, a == b)
+    if has_table(con, "cb", "player_styles"):  # every player: a batting hand and pace / spin / none
+        (bad,) = con.execute(STYLES_CHECK).fetchone() or (0,)
+        out["players without a batting hand or bowling type"] = (int(bad or 0), 0, not bad)
     if has_table(con, "cb", "ref_bowling"):  # an independent source: Cricinfo's scorecard
         (bad,) = con.execute(SCORECARD_CHECK).fetchone() or (0,)
         out["dismissed per bowler-match vs scorecard: mismatches"] = (int(bad or 0), 0, not bad)
     return out
 
+
+STYLES_CHECK = """SELECT count(*) FROM people p LEFT JOIN cb.player_styles s USING (player_id)
+    WHERE coalesce(s.bat_hand, '') = '' OR coalesce(s.bowl_kind, '') NOT IN ('pace', 'spin', 'none')"""
 
 SCORECARD_CHECK = """WITH g AS (SELECT match_id, bowler_id, sum(n) w FROM (
         SELECT b.match_id, b.bowler_id, count(*) n FROM gb b WHERE b.bowler_wicket GROUP BY ALL) GROUP BY ALL),
