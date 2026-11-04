@@ -37,6 +37,7 @@ STORY = re.compile(
 )
 MOMENT = re.compile(r"\b(how|who|when|which|describe|what happened|show|list|tell me about|where)\b", re.I)
 GAP = "I don't have a verified query for that in the IPL archive, so I can't answer it reliably."
+BUSY = "The query writer is rate-limited right now, so I couldn't build that query. Please ask again in a minute."
 COUNT = re.compile(
     r"\b(most|how many|number of|count|tally|total|leading|top \d+|career|in all|best|average|"
     r"economy|strike[- ]?rate|run[- ]?rate|record)\b",
@@ -76,7 +77,47 @@ WHICH_SEASON = re.compile(r"\bwhich (ipl )?(season|year|edition)\b", re.I)
 RATE = re.compile(r"\b(run[- ]?rate|scoring rate|economy|boundar\w*|dot[- ]?ball\w*|strike[- ]?rate)\b", re.I)
 
 
-def mismatch(question: str, summary: str, players_named: bool = False) -> str | None:
+ALL_TIME = re.compile(
+    r"\b(all (seasons|time|ipls?|editions)|ever|career|in (ipl )?history|of all time|all[- ]time)\b", re.I
+)
+SPAN = re.compile(r"\b(20\d\d)\s*[-–]\s*(20\d\d)\b")
+# Bowlers have arms, batters have hands: "left-handed fast bowler" means a left-arm one (it was once answered with
+# right-arm Malinga, bowling to left-handed batters).
+BOWLER_HAND = re.compile(
+    r"\b(left|right)[- ]hand(?:ed)?\s+((?:(?:fast|quick|pace|seam|medium|spin|leg|off|wrist|finger|slow)[\w-]*\s+)?)"
+    r"(bowl(?:er|ers|ing)?|spinners?|pacers?|seamers?|quicks?)\b",
+    re.I,
+)
+
+
+BOWLING_ASK = re.compile(
+    r"\b(econom\w*|bowling (average|strike rate)|dot balls?|maidens?|conceded?|wickets?)\b", re.I
+)
+BATTING_V_BOWLERS = re.compile(
+    r"\b(against|vs?\.?|versus|off)\b[^?]*\b(bowl\w*|spinn\w*|pacers?|seamers?|quicks?|spin|pace)\b", re.I
+)
+
+
+def role_mismatch(question: str, calls: list[dict] | None) -> str | None:
+    """The planner picked the wrong side of the ball: Bumrah's economy read as Bumrah the batter, or Dhoni's
+    average against left-arm bowlers read as Dhoni the bowler."""
+    subjects = {(c.get("args") or {}).get("subject") for c in calls or [] if c.get("name") == "slice_stats"}
+    if not subjects:
+        return None
+    if BATTING_V_BOWLERS.search(question) and not BOWLING_ASK.search(question) and "bowler" in subjects:
+        return "batting_matchup_on_bowler_slice"
+    if BOWLING_ASK.search(question) and not BATTING_V_BOWLERS.search(question) and subjects == {"batter"}:
+        return "bowling_measure_on_batter_slice"
+    return None
+
+
+def bowler_arm(question: str) -> str:
+    return BOWLER_HAND.sub(lambda m: f"{m.group(1)}-arm {m.group(2)}{m.group(3)}", question)
+
+
+def mismatch(
+    question: str, summary: str, players_named: bool = False, latest: int | None = None
+) -> str | None:
     """Named arbitration: cricbot answered a nearby question, not this one."""
     if WHICH_SEASON.search(question) and players_named:
         return "subject_season_got_players"
@@ -86,6 +127,9 @@ def mismatch(question: str, summary: str, players_named: bool = False) -> str | 
         return "polarity_high_for_low"
     if STYLE.search(question):  # cricbot splits spin/pace only; arm and spin type are in the finder's views
         return "bowling_style_not_in_stats"
+    span = SPAN.search(summary)
+    if latest and span and ALL_TIME.search(question) and int(span.group(2)) < latest:
+        return "all_time_got_closed_range"  # "all seasons" answered over 2008-2025 with 2026 in the archive
     return None
 
 
@@ -190,8 +234,11 @@ class Pandit:
         on_step: Callable[[dict[str, Any]], None] | None = None,
     ) -> Answer:
         t0 = time.time()
+        asked, question = question, bowler_arm(question)
         frame = build_frame(question, self.cat, history)
         src, trace = Sources(), Trace([{"step": "frame", **frame.as_dict()}], on_step)
+        if question != asked:
+            trace.append({"step": "route", "rule": "bowler_hand_is_arm", "question": question})
         if frame.ambiguous and not frame.players:
             token, cands = next(iter(frame.ambiguous.items()))
             return self._done(
@@ -298,7 +345,13 @@ class Pandit:
             asked, past = spell_out(asked, frame, history)
             st = self._stats(asked, past, src) if self.root else {"kind": "none"}
             why = (
-                mismatch(question, st["summary"], bool(link_players(st["summary"], self.cat).players))
+                mismatch(
+                    question,
+                    st["summary"],
+                    bool(link_players(st["summary"], self.cat).players),
+                    self.cat.latest_year if self.cat.season_years else None,
+                )
+                or role_mismatch(question, st.get("calls"))
                 if st["kind"] == "stats"
                 else None
             )
@@ -463,7 +516,13 @@ class Pandit:
             return None
         why = (
             itn.shape_fits(it, st.get("tables", []), frame, st["facts"])
-            or mismatch(question, st["summary"], bool(link_players(st["summary"], self.cat).players))
+            or mismatch(
+                question,
+                st["summary"],
+                bool(link_players(st["summary"], self.cat).players),
+                self.cat.latest_year if self.cat.season_years else None,
+            )
+            or role_mismatch(question, st.get("calls"))
             or uncovered(frame, st)
         )
         note.update(calls=st.get("calls"), mismatch=why)
@@ -509,13 +568,21 @@ class Pandit:
         if res["kind"] != "rows":
             why = res.get("reason", "")
             text = gap_reply or (
-                f"I can't answer that from the IPL archive: {why.rstrip('.')}."
-                if why and not why.startswith(("DuckDB", "the query", "reply with", "llm"))
+                BUSY
+                if why.startswith("llm")
+                else f"I can't answer that from the IPL archive: {why.rstrip('.')}."
+                if why and not why.startswith(("DuckDB", "the query", "reply with"))
                 else GAP
             )
             return prior or self._done(text, "gap", frame, src, trace, t0, mode="gap")
         src.stats["S1"] = {"question": question, "reply": finder.evidence(res)}
         ans = self._write(question, "finder", [f"{src.stats['S1']['reply']} [S1]"], frame, src, trace, t0)
+        top = finder.top_name(question, res)
+        if top and ans.mode == "llm" and top.casefold() not in ans.text.casefold():
+            trace.append(
+                {"step": "fallback", "rule": "writer_skipped_top_row", "top": top}
+            )  # the ranking's answer is row 1
+            ans.text, ans.mode = finder.top_line(res), "extractive"
         sample = finder.footnote(question, res)  # in code: the writer may drop the sample or the filter
         ans.text += f"\n\n({sample + ' ' if sample else ''}Computed by a generated query over the archive; the SQL is in the trace.)"
         return ans

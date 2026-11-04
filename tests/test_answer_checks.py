@@ -273,3 +273,69 @@ def test_footnote_names_spin_type_and_hand():
         "rows": [(900, 1000, 40, 6.67)],
     }
     assert footnote("Bumrah economy against left-handers", res).endswith("Batters: left-handed.")
+
+
+def test_bowlers_have_arms_and_all_time_means_every_season():
+    from cricrag.agent.pandit import bowler_arm, mismatch
+
+    assert bowler_arm("which left handed fast bowler has taken most wickets at death?") == (
+        "which left-arm fast bowler has taken most wickets at death?"
+    )
+    assert bowler_arm("best left-handed spinner in 2024") == "best left-arm spinner in 2024"
+    assert (
+        bowler_arm("Bumrah against left-handed batters") == "Bumrah against left-handed batters"
+    )  # batters keep hands
+    s = "Bowlers by wickets - death overs (16-20), pace bowlers (2008-2025)"
+    assert mismatch("most death wickets in all seasons", s, latest=2026) == "all_time_got_closed_range"
+    assert mismatch("most death wickets from 2008 to 2025", s, latest=2026) is None
+    assert mismatch("most death wickets in all seasons", s.replace("2025", "2026"), latest=2026) is None
+
+
+def test_ranking_answer_is_the_first_row():
+    from cricrag.finder import evidence, top_line, top_name
+
+    res = {"cols": ["bowler", "balls", "wickets", "balls_per_wicket"],
+           "rows": [("Krunal Pandya", 44, 2, 22.0), ("Ravindra Jadeja", 81, 3, 27.0)]}  # fmt: skip
+    q = "which left arm spinner has the best strike rate against Suryakumar Yadav?"
+    assert top_name(q, res) == "Krunal Pandya"
+    assert top_line(res) == "Krunal Pandya (balls 44, wickets 2, balls per wicket 22) [S1]"
+    assert "the first row is the answer" in evidence(res)
+    assert top_name("how did Kohli bat against leg-spin?", res) is None  # not a ranking
+
+
+def test_batter_matchup_needs_runs_too():
+    sql = "select ... where batter = 'Virat Kohli' and spin_type = 'leg-spin'"
+    q = "what was Virat Kohli's strike rate against leg spinners in 2025?"
+    assert "runs" in sample_problem(q, ["balls", "dismissals", "strike_rate"], [(70, 1, 140.0)], sql)
+    assert (
+        sample_problem(q, ["runs", "balls", "dismissals", "strike_rate"], [(98, 70, 1, 140.0)], sql) is None
+    )
+
+
+def test_planner_on_the_wrong_side_of_the_ball():
+    from cricrag.agent.pandit import role_mismatch
+
+    bat = [
+        {"name": "slice_stats", "args": {"subject": "batter", "metric": "runs", "player": ["Jasprit Bumrah"]}}
+    ]
+    bowl = [
+        {
+            "name": "slice_stats",
+            "args": {"subject": "bowler", "metric": "bowling_average", "player": ["MS Dhoni"]},
+        }
+    ]
+    q1 = "What is Jasprit Bumrah's economy against left-handed batters in the death overs?"
+    assert role_mismatch(q1, bat) == "bowling_measure_on_batter_slice"
+    q2 = "how much does Dhoni average against left arm bowlers at Chepauk?"
+    assert role_mismatch(q2, bowl) == "batting_matchup_on_bowler_slice"
+    assert (
+        role_mismatch(
+            "how does Kohli bat against spin?", [{"name": "slice_stats", "args": {"subject": "batter"}}]
+        )
+        is None
+    )
+    assert (
+        role_mismatch("Bumrah's economy in 2024", [{"name": "slice_stats", "args": {"subject": "bowler"}}])
+        is None
+    )
+    assert role_mismatch("most runs in 2016", [{"name": "batting_leaders", "args": {}}]) is None
