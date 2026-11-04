@@ -505,7 +505,8 @@ class Pandit:
             return prior or self._done(text, "gap", frame, src, trace, t0, mode="gap")
         src.stats["S1"] = {"question": question, "reply": finder.evidence(res)}
         ans = self._write(question, "finder", [f"{src.stats['S1']['reply']} [S1]"], frame, src, trace, t0)
-        ans.text += "\n\n(Computed by a generated query over the archive; the SQL is in the trace.)"
+        sample = finder.footnote(question, res)  # in code: the writer may drop the sample or the filter
+        ans.text += f"\n\n({sample + ' ' if sample else ''}Computed by a generated query over the archive; the SQL is in the trace.)"
         return ans
 
     def _event(self, frame, types: list[str], src: Sources) -> list[str]:

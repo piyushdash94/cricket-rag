@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+from decimal import Decimal
 from typing import Any
 
 import duckdb
@@ -116,6 +117,84 @@ def guard(sql: str, frame: Frame) -> str | None:
     return f"the query must filter on {', '.join(miss)}" if miss else None
 
 
+RATE = re.compile(r"\b(strike[ -]?rates?|averages?|averaged|economy|economies)\b", re.I)
+RANKED = re.compile(r"\b(best|worst|highest|lowest|top|most|least|fastest|slowest|better|worse)\b", re.I)
+RATE_COL = re.compile(r"rate|avg|average|economy|\bsr\b|per_", re.I)
+BALLS_COL = re.compile(r"ball", re.I)
+NOT_COUNT = re.compile(r"^(year|season|inning|over|over_number|ball_in_over|position|rank|id)$|_id$", re.I)  # numeric, not a sample
+MIN_BALLS = 60  # the PROMPT's rule; code holds it, since the model can skip a prompt rule
+ASKED_BALLS = re.compile(r"\b(?:minimum(?: of)?|at least|min\.?)\s+(\d+)\s+balls\b", re.I)
+
+
+def qualifier(question: str) -> int | None:
+    """Minimum balls for a rate ranking: the question's own, else MIN_BALLS. None when not a rate ranking."""
+    if not (RATE.search(question) and RANKED.search(question)):
+        return None
+    return max((int(n) for n in ASKED_BALLS.findall(question)), default=MIN_BALLS)
+
+
+def sample_problem(question: str, cols: list[str], rows: list[tuple]) -> str | None:
+    """A rate answer must carry what it is built on, and a rate ranking must be qualified.
+
+    'Best strike rate v left-arm spin in 2022' once returned Obed McCoy, 7 off 2 balls (350), and an average came
+    back as a bare 39.04 with no runs, balls or dismissals to say how big the sample was.
+    """
+    if not (m := RATE.search(question)):
+        return None
+    counts = [i for i, c in enumerate(cols) if not RATE_COL.search(c) and not NOT_COUNT.search(c)
+              and all(isinstance(r[i], (int, float, Decimal)) or r[i] is None for r in rows)]
+    balls = [i for i in counts if BALLS_COL.search(cols[i])]
+    need = qualifier(question)
+    rank = f"rank only players with at least {need} balls (HAVING balls >= {need})" if need else ""
+    if not counts or (not balls and not m.group(1).lower().startswith("aver")):  # SR and economy are per ball
+        what = "runs, balls, and dismissals or wickets" if not counts else "balls"
+        return "the query must return the " + what + " the rate is built on next to it" + (f", and {rank}" if rank else "")
+    if balls and need and any((r[balls[0]] or 0) < need for r in rows):
+        return f"the query must {rank}"
+    return None
+
+
+STYLE_FILTER = re.compile(r"\b(bowl_kind|bowl_arm|bowl_style|bat_hand)\s*(=|ILIKE|IN)\s*('[^']*'|\([^)]*\))", re.I)
+
+
+def notes(question: str, sql: str, cols: list[str]) -> str:
+    """What the writer must say beside a rate: its sample, and the bowler type exactly as the query filtered it
+    ('left-arm fast' was answered over all left-arm pace, fast to medium, with nothing in the reply to say so)."""
+    out = []
+    if (need := qualifier(question)) and any(BALLS_COL.search(c) for c in cols):
+        out.append(f"ranked among players with at least {need} balls")
+    if RATE.search(question):
+        out.append("give the runs, balls and dismissals or wickets beside the rate")
+    if styles := sorted({" ".join(m.group(1, 2, 3)) for m in STYLE_FILTER.finditer(sql)}):
+        out.append("bowler/batter type as filtered: " + ", ".join(styles) + " (describe it in these words)")
+    return "; ".join(out)
+
+
+SUBTYPE = re.compile(r"\b(fast|quick|medium|orthodox|wrist|chinaman|leg[- ]?spin\w*|off[- ]?spin\w*|leg ?break|off ?break)\b", re.I)
+
+
+def footnote(question: str, res: dict[str, Any]) -> str:
+    """'Sample: 976 runs, 572 balls, 25 dismissals. Bowlers: left-arm pace of every speed.' Built from the result
+    and the SQL, not by the writer, so a rate never reaches the reader without what it rests on."""
+    if not RATE.search(question) or not res.get("rows"):
+        return ""
+    cols, top = res["cols"], res["rows"][0]
+    counts = [f"{_fmt(top[i])} {c.replace('_', ' ')}" for i, c in enumerate(cols)
+              if not RATE_COL.search(c) and not NOT_COUNT.search(c) and isinstance(top[i], (int, float, Decimal))]
+    out = [("Top row: " if len(res["rows"]) > 1 else "Sample: ") + ", ".join(counts) + "."] if counts else []
+    f = {m.group(1).lower(): m.group(3).strip("'").lower() for m in STYLE_FILTER.finditer(res.get("sql", ""))}
+    if kind := f.get("bowl_kind"):
+        who = f"{f['bowl_arm']}-arm {kind}" if f.get("bowl_arm") else kind
+        if "bowl_style" not in f and (sub := SUBTYPE.search(question)):
+            who += f" of every {'speed' if kind == 'pace' else 'type'} (not only {sub.group(1).lower()})"
+        out.append(f"Bowlers: {who}.")
+    elif style := f.get("bowl_style"):
+        out.append(f"Bowlers: {style}.")
+    if (need := qualifier(question)) and any(BALLS_COL.search(c) for c in cols):
+        out.append(f"Qualification: at least {need} balls.")
+    return " ".join(out)
+
+
 def run(con, sql: str, limit: int = 15, timeout: float = 10.0) -> tuple[list[str], list[tuple]]:
     timer = threading.Timer(timeout, con.interrupt)
     timer.start()
@@ -156,7 +235,12 @@ def find(llm, con, frame: Frame, hint: dict | None = None) -> dict[str, Any]:
         {
             "role": "user",
             "content": f"QUESTION: {frame.question}\nFRAME: {json.dumps(given)}"
-            + (f"\nFORM (what is asked): {json.dumps(hint)}" if hint else ""),
+            + (f"\nFORM (what is asked): {json.dumps(hint)}" if hint else "")
+            + (
+                f"\nSAMPLE: return runs and balls with the rate; rank only players with at least {need} balls."
+                if (need := qualifier(frame.question))
+                else ""
+            ),
         },
     ]
     for _ in range(2):
@@ -176,9 +260,13 @@ def find(llm, con, frame: Frame, hint: dict | None = None) -> dict[str, Any]:
         if not problem:
             try:
                 cols, rows = run(con, sql)
-                if rows and not (len(rows) == 1 and all(v in (0, None) for v in rows[0])):
-                    return {"kind": "rows", "sql": sql, "cols": cols, "rows": rows}
-                problem = "the query matched nothing; check filters and spellings (names/venues: use ILIKE '%word%')"
+                if not rows or (len(rows) == 1 and all(v in (0, None) for v in rows[0])):
+                    problem = "the query matched nothing; check filters and spellings (names/venues: use ILIKE '%word%')"
+                elif not (problem := sample_problem(frame.question, cols, rows)):
+                    out_ = {"kind": "rows", "sql": sql, "cols": cols, "rows": rows}
+                    if note := notes(frame.question, sql, cols):
+                        out_["note"] = note
+                    return out_
             except duckdb.Error as exc:
                 problem = f"DuckDB error: {str(exc).splitlines()[0][:200]}"
         msgs += [
@@ -203,4 +291,5 @@ def parse(out: str) -> dict[str, Any]:
 def evidence(res: dict[str, Any]) -> str:
     head = " | ".join(res["cols"])
     body = "; ".join(" | ".join(_fmt(v) for v in r) for r in res["rows"])
-    return f"QUERY RESULT computed for this question, {len(res['rows'])} row(s) ({head}): {body}"
+    note = f" ({res['note']}; say so)" if res.get("note") else ""
+    return f"QUERY RESULT computed for this question{note}, {len(res['rows'])} row(s) ({head}): {body}"

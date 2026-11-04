@@ -45,12 +45,15 @@ FAKE_TAG = re.compile(r"\[(?![CSME]\d+\])([A-Z][A-Z _-]{2,})\]")
 
 
 def initials_match(name: str, text: str) -> bool:
-    """A full name the writer used for a scorecard's initials form: same surname, first initial among the initials."""
+    """A full name the writer used for a scorecard's initials form: same surname and first initial.
+
+    The first initial must lead: 'KH Pandya' is Krunal, and must not license 'Hardik Pandya' (HH Pandya).
+    """
     parts = name.split()
     if len(parts) < 2:
         return False
     return bool(
-        re.search(rf"\b[A-Z]{{0,3}}{re.escape(parts[0][0])}[A-Z]{{0,3}}\.?\s+{re.escape(parts[-1])}\b", text)
+        re.search(rf"\b{re.escape(parts[0][0])}[A-Z]{{0,3}}\.?\s+{re.escape(parts[-1])}\b", text)
     )
 
 

@@ -67,7 +67,7 @@ def _window(rows: list[dict[str, Any]], start: int, end: int) -> dict[str, Any]:
         "score_after": f"{chunk[-1]['_runs']}/{chunk[-1]['_wickets']}",
         "boundaries": sum(1 for ball in chunk if ball.get("boundary")),
         "dots": sum(1 for ball in chunk if _legal(ball) and int(ball.get("runs") or 0) == 0),
-        "dismissed": [ball.get("title", "").split(" to ")[-1] for ball in chunk if ball.get("wicket")],
+        "dismissed": [ball.get("out") or ball.get("title", "").split(" to ")[-1] for ball in chunk if ball.get("wicket")],
         "bowlers": sorted(
             {
                 ball.get("bowler") or ball.get("title", "").split(" to ")[0]

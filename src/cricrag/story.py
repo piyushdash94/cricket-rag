@@ -17,13 +17,13 @@ from cricrag.momentum import describe, match_shifts
 from cricrag.text import strip_html
 
 BALLS = """select inning, over_number, over_label, runs_total, is_wicket, is_four, is_six, is_wide, is_noball, bowler, batter,
-                  batting_team, commentary from balls where match_id = ? and inning <= 2 order by inning, sequence"""
+                  batting_team, commentary, player_out from balls where match_id = ? and inning <= 2 order by inning, sequence"""
 
 
 def match_balls(con, match_id: int, drops: dict | None = None) -> tuple[list[dict], list[dict]]:
     """Balls in the momentum detector's format, plus innings [{team, runs}]."""
     balls, innings = [], {}
-    for inn, over, label, runs, wkt, four, six, wd, nb, bowler, batter, team, text in con.execute(
+    for inn, over, label, runs, wkt, four, six, wd, nb, bowler, batter, team, text, out in con.execute(
         BALLS, [match_id]
     ).fetchall():
         event = (
@@ -39,6 +39,7 @@ def match_balls(con, match_id: int, drops: dict | None = None) -> tuple[list[dic
             "event": event,
             "bowler": bowler,
             "title": f"{bowler} to {batter}",
+            "out": (out or batter) if wkt else None,  # a non-striker run out is not the striker
             "text": strip_html(text),
         }
         if drops is not None:  # audited drops replace the regex (fielding audit: bare "dropped" ~25% precise)
@@ -47,6 +48,16 @@ def match_balls(con, match_id: int, drops: dict | None = None) -> tuple[list[dic
         balls.append(ball)
         innings.setdefault(inn, {"team": canon(team), "runs": 0})["runs"] += runs or 0
     return balls, [innings[i] for i in sorted(innings)]
+
+
+# Scorecards (cs_*) carry Cricsheet's initials ('KH Pandya'); the writer gets the full name ('Krunal Pandya'),
+# or it may expand the initials to the wrong player (Hardik for KH Pandya, both in the 2017 final).
+FULL = "coalesce((select s.name from player_styles s where s.player_id = c.player_id and s.name <> ''), c.player)"
+
+
+def _card(con, sql: str, mid: int) -> list[tuple]:
+    """A cs_* card query written with {name} for the player: full names when the card has player ids."""
+    return _rows(con, sql.format(name=FULL), mid) or _rows(con, sql.format(name="c.player"), mid)
 
 
 def _rows(con, sql: str, mid: int) -> list[tuple]:
@@ -79,15 +90,15 @@ def facts(con, mid: int) -> list[str]:
         "where match_id=? and inning<=2 order by inning",
         mid,
     ):
-        bat = _rows(
+        bat = _card(
             con,
-            f"select player, runs, balls from cs_batting_card where match_id=? and inning={inn} "
+            f"select {{name}}, runs, balls from cs_batting_card c where match_id=? and inning={inn} "
             "order by runs desc limit 3",
             mid,
         )
-        bowl = _rows(
+        bowl = _card(
             con,
-            f"select player, wickets, conceded, balls from cs_bowling_card where match_id=? and inning={inn} "
+            f"select {{name}}, wickets, conceded, balls from cs_bowling_card c where match_id=? and inning={inn} "
             "order by wickets desc, conceded limit 2",
             mid,
         )
@@ -96,7 +107,7 @@ def facts(con, mid: int) -> list[str]:
             f"Top batters: {', '.join(f'{p} {r} ({b})' for p, r, b in bat)}. "
             f"Best bowling against {team}: {', '.join(f'{p} {w}/{c} ({b // 6}.{b % 6})' for p, w, c, b in bowl)}."
         )
-    pom = [r[0] for r in _rows(con, "select player from cs_awards where match_id=?", mid)]
+    pom = [r[0] for r in _card(con, "select {name} from cs_awards c where match_id=?", mid)]
     if pom:
         out.append(f"Player of the match: {', '.join(pom)}.")
     return out
