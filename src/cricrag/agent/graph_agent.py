@@ -27,6 +27,7 @@ from cricrag.agent.pandit import Answer, Trace
 from cricrag.agent.validate import Sources
 from cricrag.frame import build_frame
 from cricrag.graph import tools as gt
+from cricrag.graph import venues as gv
 from cricrag.text import numbers
 
 # ------------------------------------------------------------------ route rules (named)
@@ -44,6 +45,14 @@ RANK = re.compile(
 # Pandit already answers these well: batting partnerships, scorecards, and match moments.
 PANDIT_FIRST = re.compile(r"\b(partnerships?|stand|put on|added together|scorecard|turn(ed|ing)?|final|how was \w+ out|batting together)\b", re.I)  # fmt: skip
 PAIR_WORDS = re.compile(r"\b(pairs?|partners?|combination|combo|c ?& ?b|duo)\b", re.I)
+# Grounds: only clear venue cues come here; "average score at Wankhede" stays with Pandit's stats.
+VENUE_LIKE = re.compile(r"\b(plays? (like|similar)|similar (to|grounds?|venues?|pitch\w*)|like (the )?\w+ (pitch|ground|wicket|surface)|"
+                        r"(ground|venue|pitch) (types?|famil\w*|clusters?)|(kinds?|types?|famil\w*) of (ipl )?(grounds?|venues?|pitch\w*)|"
+                        r"(spin|pace|batting|bowling)[- ]friendly (grounds?|venues?|pitch\w*))\b", re.I)  # fmt: skip
+VENUE_PAR = re.compile(r"\b(above par|below par|v(s|ersus)? par|against (the )?par|venue[- ]adjusted|best (venues?|grounds?)|"
+                       r"worst (venues?|grounds?)|favou?rite (venues?|grounds?)|where does \w+(?: \w+)? (bat|bowl) best|"
+                       r"masters? (of|at)|dominat\w* at|best (batters?|bowlers?|players?) at|who (bats|bowls) best at)\b", re.I)  # fmt: skip
+BOWL_SIDE = re.compile(r"\b(bowl(s|ing|ers?)?|economy|wickets?)\b", re.I)
 
 
 def route(question: str, n_players: int, n_teams: int) -> tuple[str, str]:
@@ -90,6 +99,7 @@ WRITER = """You are Pandit, an IPL analyst. Answer the question using only the E
 - Use only the numbers shown, written as digits; never add, subtract, average or derive new ones.
 - If a line starts "Tied for the most", name every tied player and say they are tied; never crown one of them.
 - For quality wickets or quality runs, say once how they are weighted, in the evidence's words.
+- For grounds that play alike, list the "% alike" grounds in order with their %, then name the family; never mention "the evidence".
 - If the evidence does not answer the question, say exactly what is missing."""
 
 GTAG = re.compile(r"\[(G\d+)\]")
@@ -138,6 +148,23 @@ def validate(reply: str, lines: list[str], question: str) -> list[str]:
     return problems
 
 
+def cite_missing(reply: str, lines: list[str]) -> str:
+    """Attach a tag to an uncited sentence whose numbers all sit in one evidence line (the writer's commonest slip:
+    the right figure, no [G#]). Anything less certain is left for the validator to reject."""
+    out = []
+    for sent in re.split(r"(?<=[.!?])\s+", reply.strip()):
+        nums = numbers(GTAG.sub("", sent)) | {str(WORDS[w.lower()]) for w in WORD_NUM.findall(sent)}
+        if nums and not GTAG.search(sent):
+            hits = [ln for ln in lines if GTAG.search(ln) and nums <= numbers(ln)]
+            if hits:
+                tag = GTAG.search(hits[0]).group(0)
+                body = sent.rstrip()
+                end = body[-1] if body[-1:] in ".!?" else ""
+                sent = f"{body[: len(body) - len(end)]} {tag}{end}"
+        out.append(sent)
+    return " ".join(out)
+
+
 def extractive(ev: gt.Evidence) -> str:
     """No LLM, or the writer failed twice: show the evidence itself, cited."""
     if ev.gap:
@@ -154,6 +181,7 @@ class State(TypedDict, total=False):
     frame: Any
     program: str
     rule: str
+    venue: str | None
     evidence: Any
     answer: Answer
 
@@ -224,7 +252,20 @@ class PanditGraph:
 
     def _route(self, s: Any) -> dict[str, Any]:
         f = s["frame"]
-        if f.ambiguous and not f.players:
+        venue = self._venue(s["question"])
+        if venue and VENUE_LIKE.search(s["question"]) and not f.players:
+            program, rule = "venue_like", "venue_like_cue"
+        elif (
+            VENUE_LIKE.search(s["question"])
+            and not f.players
+            and re.search(r"\b(grounds|venues|types|famil)", s["question"], re.I)
+        ):
+            program, rule = "venue_families", "venue_families_cue"
+        elif VENUE_PAR.search(s["question"]) and len(f.players) == 1:
+            program, rule = "player_venues", "player_venue_par_cue"
+        elif venue and VENUE_PAR.search(s["question"]) and not f.players:
+            program, rule = "venue_masters", "venue_masters_cue"
+        elif f.ambiguous and not f.players:
             program, rule = "pandit", "ambiguous_name_to_pandit"  # Pandit owns the clarify card
         else:
             program, rule = route(s["question"], len(f.players), len(f.teams))
@@ -232,8 +273,23 @@ class PanditGraph:
             program, rule = "clarify", "graph_not_built"
         elif program == "head_to_head" and not self._has_matchup(f.players[:2]):
             program, rule = "pandit", "no_balls_between_players"  # two team-mates, not a matchup
-        self.trace.append({"step": "relational_route", "rule": rule, "program": program})
-        return {"program": program, "rule": rule}
+        self.trace.append(
+            {
+                "step": "relational_route",
+                "rule": rule,
+                "program": program,
+                **({"venue": venue} if venue else {}),
+            }
+        )
+        return {"program": program, "rule": rule, "venue": venue}
+
+    def _venue(self, question: str) -> str | None:
+        if not self.graph_db.is_file():
+            return None
+        try:
+            return gv.find_venue(self.con, question)
+        except Exception:  # an older graph without venue tables
+            return None
 
     def _has_matchup(self, names: list[str]) -> bool:
         ids = [gt.player_id(self.con, n) for n in names]
@@ -275,6 +331,16 @@ class PanditGraph:
             ev = gt.bunnies(con, ids[0], seasons, team=team)
         elif program == "teammates":
             ev = gt.teammates(con, ids[0], seasons)
+        elif program == "venue_like":
+            ev = gt.venue_like(con, s["venue"], seasons)
+        elif program == "venue_families":
+            ev = gt.venue_families(con, seasons)
+        elif program in ("venue_masters", "player_venues"):
+            role = "bowl" if BOWL_SIDE.search(s["question"]) else "bat"
+            if program == "venue_masters":
+                ev = gt.venue_masters(con, s["venue"], role, seasons)
+            else:
+                ev = gt.player_venues(con, ids[0], role, seasons, venue=s.get("venue"))
         elif program in ("catch_pairs", "drops"):
             fielder, bowler = self._fielding_roles(ids, program)
             fn = gt.catch_pairs if program == "catch_pairs" else gt.drops
@@ -328,7 +394,7 @@ class PanditGraph:
                 self.trace.append({"step": "llm_unavailable", "error": str(exc)[:160]})
                 break
             model = out.get("model")
-            text = clean(out["message"].get("content") or "")
+            text = cite_missing(clean(out["message"].get("content") or ""), ev.lines)
             problems = validate(text, ev.lines, s["question"])
             self.trace.append({"step": "validate", "attempt": attempt + 1, "problems": problems})
             if not problems:

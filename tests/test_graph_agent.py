@@ -145,3 +145,16 @@ def test_validator_reads_number_words_and_llm_punctuation():
     assert validate("A Bowler got B Batter six times [G1].", lines, "q") == ["numbers not in evidence: ['6']"]
     assert validate("", lines, "q") == ["empty reply"]
     assert validate("Mumbai Indians: A Bowler 7 [G1].", lines, "q") == []
+
+
+def test_uncited_sentence_gets_the_line_that_holds_its_numbers():
+    from cricrag.agent.graph_agent import cite_missing
+
+    lines = ["Ravindra Jadeja and MS Dhoni played in the same team in 12 seasons (CSK) [G1]",
+             "Ravindra Jadeja and Dwayne Bravo played in the same team in 10 seasons (CSK/GL) [G2]"]  # fmt: skip
+    got = cite_missing("Ravindra Jadeja has played with MS Dhoni the most, in 12 seasons.", lines)
+    assert got == "Ravindra Jadeja has played with MS Dhoni the most, in 12 seasons [G1]."
+    assert validate(got, lines, "q") == []
+    assert (
+        cite_missing("He played 99 seasons.", lines) == "He played 99 seasons."
+    )  # no line holds 99: left to fail

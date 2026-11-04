@@ -947,3 +947,19 @@ button.fp-news-all { background:transparent; font-family:inherit; }
 @media (prefers-reduced-motion:reduce) { .news-overlay,.news-sheet { transition:none; } }
 .net-rank.compact li { grid-template-columns:18px minmax(0,1.3fr) minmax(48px,1fr) 40px; }
 .net-rank.compact li span small { display:block; margin-top:1px; color:var(--muted); font-size:11px; white-space:nowrap; }
+/* Grounds tab */
+.net-two { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:14px; }
+.net-par .section-kicker { margin:0 0 4px; }
+.net-mini td small { color:var(--faint); font-size:11px; }
+.net-mini td.up { color:var(--green, #2f9e5b); } .net-mini td.down { color:var(--red); }
+.net-mini td.par { font-weight:700; white-space:nowrap; }
+.net-mini td.par i { display:inline-block; height:7px; margin-right:6px; border-radius:4px; vertical-align:middle; background:currentColor; opacity:.55; }
+.net-families { display:grid; gap:10px; }
+.net-families > div { display:grid; gap:6px; padding-top:8px; border-top:1px solid var(--line); }
+.net-families b { font-size:12.5px; text-transform:capitalize; }
+.net-families span { display:flex; flex-wrap:wrap; gap:6px; }
+.net-families button { padding:4px 10px; border:1px solid var(--line2); border-radius:999px; color:var(--ink); background:var(--panel); font-size:12px; cursor:pointer; }
+.net-families button.on { border-color:var(--accent); color:var(--on-accent); background:var(--accent); }
+.net-edge.similar { stroke:var(--green, #2f9e5b); } .net-edge.venue_par { stroke:var(--accent); }
+.net-section > header .seg { margin:0; }
+.net-legend .dot.venue { background:var(--green, #2f9e5b); }

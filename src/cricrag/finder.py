@@ -94,6 +94,8 @@ Rules (data conventions):
 - Bowler wickets = bowler_wicket (run outs are not the bowler's); runs conceded = charged (byes and leg byes excluded).
 - "minimum N", "at least N", "min N" in the question is a HAVING filter on the count it names.
 - Strike rate = 100*runs/balls, economy = 6*conceded/balls, average = runs/dismissals.
+- A BOWLER's strike rate is balls per wicket (lower is better; only bowlers with a wicket): "which bowler has the
+  best strike rate against <batter>" = balls per dismissal of that batter, lowest first. A batter's is 100*runs/balls.
 - Join balls or events to innings on (match_id, inning) to get the batting side's result (won).
 - Rankings: ORDER BY the measure, LIMIT 10, return the name plus the measure (and counts it depends on).
 - If the needed data is not in these views (captaincy, auctions, umpires, injuries...), set "sql" to null.
@@ -169,11 +171,12 @@ def sample_problem(question: str, cols: list[str], rows: list[tuple], sql: str =
     if (
         STYLE_FILTER.search(sql)
         and re.search(r"\bbatter\s*(=|ilike\b)", sql, re.I)
-        and not any(re.search(r"dismiss|outs?$|wicket", c, re.I) for c in cols)
-    ):  # a batter against a bowler type: runs, balls and dismissals are the answer
-        return (
-            "the query must also return the batter's dismissals (bowler_wicket AND player_out = the batter)"
+        and not (
+            any(re.search(r"dismiss|outs?$|wicket", c, re.I) for c in cols)
+            and any(re.search(r"(^|_)runs?($|_)", c, re.I) for c in cols)
         )
+    ):  # a batter against a bowler type: runs, balls and dismissals are the answer
+        return "the query must also return the batter's runs and dismissals (bowler_wicket AND player_out = the batter)"
     if not (m := RATE.search(question)):
         return None
     counts = [
@@ -234,6 +237,8 @@ def footnote(question: str, res: dict[str, Any]) -> str:
         out.append(f"Bowlers: {spin.strip('()').replace(chr(39), '')}.")
     elif kind := f.get("bowl_kind"):
         out.append(f"Bowlers: {f['bowl_arm'] + '-arm ' if f.get('bowl_arm') else ''}{kind}.")
+    elif arm := f.get("bowl_arm"):
+        out.append(f"Bowlers: {arm}-arm, pace and spin.")
     if hand := f.get("bat_hand"):
         out.append(f"Batters: {hand}-handed.")
     if (need := qualifier(question)) and any(BALLS_COL.search(c) for c in cols):
@@ -334,8 +339,23 @@ def parse(out: str) -> dict[str, Any]:
     return {}
 
 
+def top_name(question: str, res: dict[str, Any]) -> str | None:
+    """The answer of a ranking: the first row's name (rows come back in the query's order)."""
+    rows, cols = res.get("rows") or [], res.get("cols") or []
+    if not (rows and RANKED.search(question) and cols and isinstance(rows[0][0], str)):
+        return None
+    return rows[0][0]
+
+
+def top_line(res: dict[str, Any]) -> str:
+    """The first row in words, for when the writer named another one."""
+    row = res["rows"][0]
+    return f"{row[0]} ({', '.join(f'{c.replace(chr(95), chr(32))} {_fmt(v)}' for c, v in zip(res['cols'][1:], row[1:], strict=False))}) [S1]"
+
+
 def evidence(res: dict[str, Any]) -> str:
     head = " | ".join(res["cols"])
     body = "; ".join(" | ".join(_fmt(v) for v in r) for r in res["rows"])
     note = f" ({res['note']}; say so)" if res.get("note") else ""
-    return f"QUERY RESULT computed for this question{note}, {len(res['rows'])} row(s) ({head}): {body}"
+    rank = "; rows are in ranked order, the first row is the answer" if len(res["rows"]) > 1 else ""
+    return f"QUERY RESULT computed for this question{note}{rank}, {len(res['rows'])} row(s) ({head}): {body}"

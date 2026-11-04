@@ -250,3 +250,29 @@ def test_connection_runs_on_the_teammate_graph(graph):
     assert gx.teammate_graph(con).has_edge(1, 2)  # Rohit and Hardik, MI 2024
     ev = gt.connection(con, 1, 10)  # Rohit (MI) to Deepak Chahar (CSK): only a match links them
     assert ev.tool == "connection"
+
+
+def test_venues_par_and_naming(graph):
+    from cricrag.graph import venues as gv
+
+    con, report = graph
+    assert report["parity"]["venue_player bat runs == bowled_to.runs"][2]
+    assert gv.find_venue(con, "who bats best at wankhede?") == "Wankhede"
+    assert gv.find_venue(con, "how is it at the oval?") is None
+    rows = gv.masters(con, "Wankhede", "bat", min_balls=1, top=10)
+    me = next(r for r in rows if r["player"] == "Rohit Sharma")  # 4 off 2; everyone else 10 off 8 legal balls
+    assert (me["runs"], me["balls"], me["strike_rate"]) == (4, 2, 200.0)
+    assert me["par_strike_rate"] == 125.0  # 10 / 8: par leaves out his own balls (with them it would be 140)
+    assert gv.profiles(con) == {}  # one match: below MIN_MATCHES, no profile, no families
+    assert gv.families(con) == []
+
+
+def test_ground_names_merge_across_renames():
+    import duckdb
+
+    from cricrag.graph.venues import GROUND_SQL
+
+    con = duckdb.connect()
+    got = [con.execute(f"SELECT {GROUND_SQL.format(v='x.v')} FROM (SELECT ? AS v) x", [v]).fetchone()[0]
+           for v in ("Feroz Shah Kotla, Delhi", "Arun Jaitley Stadium, Delhi", "M Chinnaswamy Stadium, Bengaluru")]  # fmt: skip
+    assert got == ["Arun Jaitley Stadium", "Arun Jaitley Stadium", "M Chinnaswamy Stadium"]

@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     )
     router: str = "intent"  # intent | rules
     agent: str = "graph"  # graph (LangGraph: relational branch + Pandit) | pandit
-    groq_max_wait: float = 20.0  # seconds to wait on a 429 before trying the next model (raise for eval runs)
+    groq_max_wait: float = 40.0  # seconds to wait on a 429 before trying the next model (raise for eval runs)
 
     @property
     def db_path(self) -> Path:
