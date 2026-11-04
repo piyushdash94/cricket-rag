@@ -945,3 +945,5 @@ button.fp-news-all { background:transparent; font-family:inherit; }
 @media (max-width:820px) { .news-track { grid-auto-columns:calc((100% - 12px) / 2); } }
 @media (max-width:560px) { .news-overlay { padding:0 0 56px; place-items:end stretch; } .news-sheet { max-height:92vh; border-radius:16px 16px 0 0; } .news-track { grid-auto-columns:100%; } .news-arrow { display:none; } .news-stage { grid-template-columns:minmax(0,1fr); } }
 @media (prefers-reduced-motion:reduce) { .news-overlay,.news-sheet { transition:none; } }
+.net-rank.compact li { grid-template-columns:18px minmax(0,1.3fr) minmax(48px,1fr) 40px; }
+.net-rank.compact li span small { display:block; margin-top:1px; color:var(--muted); font-size:11px; white-space:nowrap; }

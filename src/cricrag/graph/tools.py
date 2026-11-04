@@ -317,8 +317,9 @@ def connection(con, a: int, b: int) -> Evidence:
     if a not in g or b not in g:
         ev.gap = f"{an if a not in g else bn} has no teammate links in the archive."
         return ev
-    try:
-        path = nx.shortest_path(g, a, b)
+    try:  # of the shortest chains, the strongest (most seasons together), so the answer does not depend on row order
+        paths = list(itertools.islice(nx.all_shortest_paths(g, a, b), 2000))
+        path = max(paths, key=lambda p: (sum(g[x][y]["weight"] for x, y in itertools.pairwise(p)), [-n for n in p]))
     except nx.NetworkXNoPath:
         ev.gap = f"No chain of teammates links {an} and {bn}."
         return ev

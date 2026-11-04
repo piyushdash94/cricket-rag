@@ -32,7 +32,7 @@ items = [
  ("What was the best fielder-bowler combination for MI in 2019?", ["Quinton de Kock"]),
  ("Who dropped the most catches off Dwayne Bravo's bowling?", ["MS Dhoni"]),
  ("Who has Ravindra Jadeja played with the most?", ["MS Dhoni"]),
- ("How is Virat Kohli connected to Rashid Khan?", ["Mahipal Lomror"]),
+ ("How is Virat Kohli connected to Rashid Khan?", ["Mohammed Siraj"]),  # strongest 2-step link: 7 + 3 seasons (SQL)
  ("Show the network rank of bowlers in 2024", ["Harshal Patel"]),  # quality wickets; checked against raw-archive SQL
 ]
 llm = GroqClient(s.groq_api_key, s.groq_models, s.cache_dir / "llm", max_wait=s.groq_max_wait)
@@ -46,5 +46,6 @@ for q, gold in items:
     rows.append(dict(q=q, gold=gold, ok=hit, mode=ans.mode, program=ans.program, problems=ans.problems, model=ans.model,
                      reply=ans.text, rule=next((x["rule"] for x in ans.trace if x.get("step") == "relational_route"), None)))
     print(f"{'OK ' if hit else 'MISS'} [{ans.mode}/{ans.model}] {q}\n     gold={gold}\n     {ans.text[:300]}\n     problems={ans.problems}", flush=True)
+import pathlib; pathlib.Path("data/eval").mkdir(parents=True, exist_ok=True)  # noqa: E702
 json.dump({"rows": rows, "usage": llm.usage}, open("data/eval/relational_llm.json", "w"), indent=1)
 print(sum(r["ok"] for r in rows), "/", len(rows), "llm:", sum(r["mode"] == "llm" for r in rows), "usage", llm.usage)

@@ -241,3 +241,12 @@ def test_keeper_is_whoever_stumped_for_that_side_that_season(graph):
     )
     assert next(n for n in ev.nodes if n["label"] == "MS Dhoni")["keeper"] is True
     assert gt.catch_pairs(con, team="MI").rows[0]["keeper"] is False  # Hardik caught, never stumped
+
+
+def test_connection_runs_on_the_teammate_graph(graph):
+    from cricrag.graph import tools as gt
+
+    con, _ = graph
+    assert gx.teammate_graph(con).has_edge(1, 2)  # Rohit and Hardik, MI 2024
+    ev = gt.connection(con, 1, 10)  # Rohit (MI) to Deepak Chahar (CSK): only a match links them
+    assert ev.tool == "connection"

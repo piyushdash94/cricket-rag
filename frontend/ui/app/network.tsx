@@ -388,9 +388,9 @@ export function NetworkPanel({ onClose, onAsk }: { onClose: () => void; onAsk: (
         </section>}
       </>}
       {tab === "dismissals" && outs && <>
-        {outs.batter.total === 0 && outs.bowler.total === 0 && <p className="stats-note">No bowler-credited wickets for {outs.name} {season ? `in ${season}` : "in the archive"}.</p>}
-        {outs.batter.total > 0 && <ProfileCard p={outs} side="batter" season={season} onAsk={onAsk} />}
-        {outs.bowler.total > 0 && <ProfileCard p={outs} side="bowler" season={season} onAsk={onAsk} />}
+        {outs.batter.total < MIN_PROFILE && outs.bowler.total < MIN_PROFILE && <p className="stats-note">Fewer than {MIN_PROFILE} bowler-credited wickets for {outs.name} {season ? `in ${season}` : "in the archive"}: too few to profile.</p>}
+        {outs.batter.total >= MIN_PROFILE && <ProfileCard p={outs} side="batter" season={season} onAsk={onAsk} />}
+        {outs.bowler.total >= MIN_PROFILE && <ProfileCard p={outs} side="bowler" season={season} onAsk={onAsk} />}
         <p className="stats-note">Wickets credited to the bowler only: run outs are the fielder&apos;s and are left out. Bowling type from ESPN profiles (pace is every speed); top order = batting 1-3, middle = 4-7, tail = 8 and below.</p>
       </>}
       {tab === "checks" && checks && <section className="chat-card net-section">
@@ -405,6 +405,7 @@ export function NetworkPanel({ onClose, onAsk }: { onClose: () => void; onAsk: (
 type Side = { total: number; groups: { group: string; n: number; modes: Record<string, number> }[] };
 type Profile = { id: number; name: string; season: string | null; batter: Side; bowler: Side };
 const MODES = ["caught", "bowled", "lbw", "stumped", "hit wicket"];
+const MIN_PROFILE = 5; // a profile of one or two wickets is noise (Kohli the bowler: 4)
 
 /** One player and his wicket profile: a radial picture (who or what got him, by count) and the same counts by mode. */
 function ProfileCard({ p, side, season, onAsk }: { p: Profile; side: "batter" | "bowler"; season: string; onAsk: (q: string) => void }) {
@@ -461,7 +462,7 @@ export function SeasonNetwork({ season, onOpen }: { season: number; onOpen: () =
       <article className="fp-net-card">
         <p className="section-kicker">QUALITY WICKETS · BOWLERS</p>
         {ranks ? <ol className="net-rank compact">{ranks.rows.map((r) => <li key={r.player}>
-          <span>{r.player}</span><i style={{ width: `${(100 * r.score) / max}%` }} /><b>{r.score}</b><small>{r.wickets} wkts · {r["top order"]} top order</small></li>)}</ol>
+          <span>{r.player}<small>{r.wickets} wkts · {r["top order"]} top order</small></span><i style={{ width: `${(100 * r.score) / max}%` }} /><b>{r.score}</b></li>)}</ol>
           : <div className="fp-net-skeleton" />}
         <p className="stats-note">Each wicket weighted by the batter&apos;s average that season (a 40-average batter counts twice a 20). Min {ranks?.min_balls ?? 120} balls.</p>
       </article>

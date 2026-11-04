@@ -6,6 +6,7 @@
   dismissal_profile  how a batter gets out (bowling type x mode) and whom a bowler dismisses (batting order x mode)
   nemesis            the bowlers who dismissed one batter most, with balls/runs between them
   fielder_bowler     caught / stumped pairs ("c X b Y")
+  teammate_graph     players linked by seasons in the same team (for the connection tool's paths)
 
 PageRank was dropped: on this graph bowlers are also batters, so a bowler's score drained to whoever dismissed
 him when he batted, and a bowler who rarely batted ranked high (Naveen-ul-Haq, 14 wickets, topped 2024 above
@@ -13,6 +14,8 @@ Bumrah's 20). The quality weights are one transparent step instead.
 """
 
 from __future__ import annotations
+
+import networkx as nx
 
 SEASONS = "({col} IN ({ph}))"
 SHRINK = 3  # pseudo-dismissals pulling a small-sample average toward the league's ("60 off 1 out" is not 60)
@@ -126,6 +129,20 @@ def fielder_bowler(con, seasons=None, top: int = 15) -> list[tuple[str, str, int
             GROUP BY 1, 2 ORDER BY n DESC LIMIT {int(top)}""",
         p,
     ).fetchall()
+
+
+def teammate_graph(con, seasons=None) -> nx.Graph:
+    """Players linked by seasons in the same team (the connection tool's shortest paths run on it)."""
+    w, p = _where(seasons)
+    pairs = con.execute(
+        f"""SELECT a.player_id, b.player_id, count(*) FROM played_for a JOIN played_for b
+            ON a.team = b.team AND a.season = b.season AND a.player_id < b.player_id
+            WHERE {w.replace("season", "a.season")} GROUP BY 1, 2""",
+        p,
+    ).fetchall()
+    g = nx.Graph()
+    g.add_weighted_edges_from(pairs)
+    return g
 
 
 def find_player(con, name: str) -> list[tuple[int, str, int]]:
