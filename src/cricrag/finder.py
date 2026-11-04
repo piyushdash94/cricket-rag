@@ -20,6 +20,7 @@ from cricrag import events as ev
 from cricrag.archive import STAGE_SQL
 from cricrag.config import settings
 from cricrag.frame import Frame
+from cricrag.styles import spin_type_sql
 
 FIX = "replace({}, 'KXIP', 'PBKS')"
 _M = f"""SELECT match_id, season, year(start_date) AS year, start_date, venue, {FIX.format("team1")} AS team1,
@@ -43,7 +44,9 @@ VIEWS = [
     .replace("VIEW b AS", "VIEW balls AS")
     .replace(
         "m.season,",
-        "m.season, year(m.start_date) AS year, bs.bowl_kind, bs.bowl_arm, bh.bat_hand,",
+        "m.season, year(m.start_date) AS year, bs.bowl_kind, bs.bowl_arm, "
+        + spin_type_sql("bs").replace("\n", " ")
+        + " AS spin_type, bh.bat_hand,",
     )
     .replace(
         "JOIN a.matches m USING (match_id)",
@@ -59,7 +62,7 @@ innings(team innings, super overs excluded): match_id, season, year, stage, inni
 batting(batter innings): match_id, season, year, stage, inning, team, opponent, position, player, runs, balls, fours, sixes, is_out BOOL, dismissal
 bowling(bowler innings): match_id, season, year, stage, inning, team (bowling side), opponent, player, balls, conceded, wickets, dots, wides, noballs
 balls(delivery): match_id, year, stage, inning, over_number (1-20), ball_in_over, sequence, bat (batting team), bowl (bowling team), phase ('powerplay' overs 1-6|'middle' 7-15|'death' 16-20), batter, non_striker, bowler, runs_total, runs_bat, extras, wide_runs, noball_runs, charged (runs charged to the bowler: no byes/leg byes), is_legal, is_wide, is_noball, is_four, is_six, is_wicket, bowler_wicket, dismissal_type, player_out,
-  bowl_kind ('pace'|'spin'), bowl_arm ('left'|'right'), bat_hand ('left'|'right')
+  bowl_kind ('pace'|'spin'), bowl_arm ('left'|'right'), spin_type ('off-spin'|'leg-spin'|'left-arm orthodox'|'left-arm wrist-spin', NULL for pace), bat_hand ('left'|'right')
 events(notable moments): type ('wicket','fifty','hundred','partnership','haul','hattrick','maiden','big_over','drop','misfield','overthrow','finish','shift'), match_id, season, year, title, stage, inning, over, label, batting_team, bowling_team, phase, player, player2, fielder, detail, value, value2, side, note, close
   drop: player = fielder (NULL if unnamed), player2 = batter, note = bowler, value2 = batter's score then, value = runs he added after
   shift: detail = 'wicket_cluster'|'scoring_burst'|'squeeze'|'chase_swing'|'missed_chance', value = swing in runs, side = team it favoured, close = decisive shift of the match"""
@@ -78,10 +81,13 @@ Rules (data conventions):
 - Career milestones ("fewest balls/innings to N runs/sixes/wickets"): a running total per player over the whole
   career in time order (join matches for start_date; then inning, sequence); the answer is the balls/innings count at
   the first row where the running total reaches N. Never answer with a rate or N/rate.
-- Rates (economy, average, strike rate) in a ranking need a sample: at least 60 balls unless the question sets one.
+- Rates (economy, average, strike rate) in a ranking need a sample: at least 60 balls, or 30 balls for a player
+  against a bowling type or batting hand, unless the question sets one.
 - Bowler types are two classes only: pace (fast, quick, medium, seam: every speed) = bowl_kind 'pace';
   spin (slow, spinners of any kind) = bowl_kind 'spin'. Add bowl_arm for left-arm/right-arm:
   left-arm fast bowlers = bowl_kind 'pace' AND bowl_arm 'left'; left-handers = bat_hand 'left'.
+  Spin by type: off-spinners = spin_type 'off-spin', leg-spinners = spin_type 'leg-spin' (legbreak and googly),
+  wrist-spinners = spin_type IN ('leg-spin', 'left-arm wrist-spin'), finger spinners = IN ('off-spin', 'left-arm orthodox').
 - A batter against a bowler type (spin, left-arm, legbreak...) or a bowler against left/right-handers is ball-level:
   sum runs_bat and non-wide balls in balls with the style filter; dismissals = rows with bowler_wicket AND
   player_out = that batter (run outs are not the bowler type's). Never use whole-innings rows from batting for these.
@@ -136,14 +142,22 @@ NOT_COUNT = re.compile(
     r"^(year|season|inning|over|over_number|ball_in_over|position|rank|id)$|_id$", re.I
 )  # numeric, not a sample
 MIN_BALLS = 60  # the PROMPT's rule; code holds it, since the model can skip a prompt rule
+MATCHUP_BALLS = 30  # a player against a bowling type or batting hand: smaller slices, smaller bar
+MATCHUP = re.compile(
+    r"\b(spin\w*|pace\w*|pacers?|seam\w*|fast bowl\w*|quicks?|medium|left[- ]hand\w*|right[- ]hand\w*|lefties|"
+    r"left[- ]arm\w*|right[- ]arm\w*|wrist\w*|leg[- ]?spin\w*|off[- ]?spin\w*|orthodox|finger)\b",
+    re.I,
+)
 ASKED_BALLS = re.compile(r"\b(?:minimum(?: of)?|at least|min\.?)\s+(\d+)\s+balls\b", re.I)
 
 
 def qualifier(question: str) -> int | None:
-    """Minimum balls for a rate ranking: the question's own, else MIN_BALLS. None when not a rate ranking."""
+    """Minimum balls for a rate ranking: the question's own, else 30 for a bowling-type or batting-hand matchup,
+    else MIN_BALLS. None when not a rate ranking."""
     if not (RATE.search(question) and RANKED.search(question)):
         return None
-    return max((int(n) for n in ASKED_BALLS.findall(question)), default=MIN_BALLS)
+    default = MATCHUP_BALLS if MATCHUP.search(question) else MIN_BALLS
+    return max((int(n) for n in ASKED_BALLS.findall(question)), default=default)
 
 
 def sample_problem(question: str, cols: list[str], rows: list[tuple], sql: str = "") -> str | None:
@@ -185,7 +199,9 @@ def sample_problem(question: str, cols: list[str], rows: list[tuple], sql: str =
     return None
 
 
-STYLE_FILTER = re.compile(r"\b(bowl_kind|bowl_arm|bat_hand)\s*(=|ILIKE|IN)\s*('[^']*'|\([^)]*\))", re.I)
+STYLE_FILTER = re.compile(
+    r"\b(bowl_kind|bowl_arm|spin_type|bat_hand)\s*(=|ILIKE|IN)\s*('[^']*'|\([^)]*\))", re.I
+)
 
 
 def notes(question: str, sql: str, cols: list[str]) -> str:
@@ -214,8 +230,12 @@ def footnote(question: str, res: dict[str, Any]) -> str:
     ]
     out = [("Top row: " if len(res["rows"]) > 1 else "Sample: ") + ", ".join(counts) + "."] if counts else []
     f = {m.group(1).lower(): m.group(3).strip("'").lower() for m in STYLE_FILTER.finditer(res.get("sql", ""))}
-    if kind := f.get("bowl_kind"):
+    if spin := f.get("spin_type"):
+        out.append(f"Bowlers: {spin.strip('()').replace(chr(39), '')}.")
+    elif kind := f.get("bowl_kind"):
         out.append(f"Bowlers: {f['bowl_arm'] + '-arm ' if f.get('bowl_arm') else ''}{kind}.")
+    if hand := f.get("bat_hand"):
+        out.append(f"Batters: {hand}-handed.")
     if (need := qualifier(question)) and any(BALLS_COL.search(c) for c in cols):
         out.append(f"Qualification: at least {need} balls.")
     return " ".join(out)

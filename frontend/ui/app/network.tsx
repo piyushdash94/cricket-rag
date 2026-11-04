@@ -2,7 +2,8 @@
 
 // Network tab: the relational graph (data/graph.duckdb) drawn as small, readable pictures.
 // Rivalry = one player's ego network (radial), Fielding web = catches / drops between a team's fielders and
-// bowlers (two columns), Rankings = network PageRank (labelled a heuristic), Communities = teammate clusters.
+// bowlers, Rankings = quality wickets / quality runs (one stated weight), How they get out = dismissals by bowling
+// type (as a batter) and by the victim's place in the order (as a bowler), each split by mode.
 // Every number shown comes from /api/graph/*, which reads SQL-built edge tables.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -15,10 +16,10 @@ export type GraphEdge = { source: number; target: number; kind: string; [k: stri
 export type GraphPayload = { tool: string; title: string; nodes: GraphNode[]; edges: GraphEdge[]; rows: Record<string, unknown>[]; gap?: string | null; lines?: string[] };
 export type GraphCard = GraphPayload & { type: "graph" };
 
-type Tab = "rivalry" | "fielding" | "rankings" | "communities" | "checks";
+type Tab = "rivalry" | "fielding" | "rankings" | "dismissals" | "checks";
 const TABS: { id: Tab; label: string }[] = [
   { id: "rivalry", label: "Rivalry" }, { id: "fielding", label: "Fielding web" }, { id: "rankings", label: "Rankings" },
-  { id: "communities", label: "Communities" }, { id: "checks", label: "Build checks" },
+  { id: "dismissals", label: "How they get out" }, { id: "checks", label: "Build checks" },
 ];
 const ROLE_COLOR: Record<string, string> = { batter: "var(--accent)", bowler: "var(--red)", fielder: "var(--amber)", player: "var(--accent)" };
 
@@ -51,6 +52,7 @@ function edgeLabel(e: GraphEdge): string {
   if (e.kind === "caught_off") return `${e.dismissals}`;
   if (e.kind === "dropped_off") return `${e.drops}`;
   if (e.kind === "teammates") return e.season ? `${e.team} ${e.season}` : `${e.seasons}`;
+  if (e.kind === "profile") return `${e.dismissals}`;
   return "";
 }
 function edgeTitle(e: GraphEdge, name: (id: number) => string): string {
@@ -58,6 +60,7 @@ function edgeTitle(e: GraphEdge, name: (id: number) => string): string {
   if (e.kind === "dismissed" || e.kind === "bowled_to") return `${base}: ${e.dismissals} dismissals, ${e.runs} runs off ${e.balls} balls`;
   if (e.kind === "caught_off") return `${base}: ${e.dismissals} caught or stumped${e.stumpings ? ` (${e.stumpings} stumpings)` : ""}`;
   if (e.kind === "dropped_off") return `${base}: ${e.drops} dropped${e.runs_after !== undefined ? `, ${e.runs_after} runs added after` : ""}`;
+  if (e.kind === "profile") return `${base}: ${e.dismissals} wickets`;
   return `${base}: ${edgeLabel(e)}`;
 }
 
@@ -226,10 +229,30 @@ export function PairMatrix({ edges, nodes, metric }: { edges: GraphEdge[]; nodes
   </figure>;
 }
 
-function Lines({ lines }: { lines?: string[] }) {
-  if (!lines?.length) return null;
-  return <ul className="net-lines">{lines.map((l) => <li key={l}>{l.replace(/\s*\[G\d+\]$/, "")}</li>)}</ul>;
+/** The numbers behind a rivalry picture, as a short table (the writer's sentences stay in the chat). */
+const COLS: Record<string, [string, string][]> = {
+  nemesis: [["bowler", "Bowler"], ["dismissals", "Outs"], ["balls", "Balls"], ["runs", "Runs"], ["strike_rate", "SR"]],
+  bunnies: [["batter", "Batter"], ["dismissals", "Outs"], ["balls", "Balls"], ["runs", "Runs"], ["strike_rate", "SR"]],
+  teammates: [["teammate", "Teammate"], ["seasons", "Seasons"], ["teams", "Teams"]],
+};
+function MiniTable({ sec, name }: { sec: GraphPayload; name: string }) {
+  const cols = sec.tool === "catch_pairs"
+    ? [[sec.rows[0]?.fielder === name ? "bowler" : "fielder", sec.rows[0]?.fielder === name ? "Bowler" : "Fielder"], ["dismissals", "Wkts"],
+      ...(sec.rows.some((r) => Number(r.stumpings ?? 0) > 0) ? [["stumpings", "Stumped"]] : [])] as [string, string][]
+    : COLS[sec.tool];
+  if (!cols || !sec.rows.length) return null;
+  return <table className="net-mini"><thead><tr>{cols.map(([, h]) => <th key={h}>{h}</th>)}</tr></thead>
+    <tbody>{sec.rows.slice(0, 6).map((r, i) => <tr key={i}>{cols.map(([k]) => <td key={k}>{String(r[k] ?? "")}</td>)}</tr>)}</tbody></table>;
 }
+function shortTitle(sec: GraphPayload, name: string): string {
+  if (sec.tool === "nemesis") return `Got ${name} out most`;
+  if (sec.tool === "bunnies") return `${name}'s most frequent victims`;
+  if (sec.tool === "teammates") return "Most seasons together";
+  if (sec.tool === "catch_pairs") return sec.rows[0]?.fielder === name ? `Catches ${name} took, by bowler` : `Caught off ${name}'s bowling`;
+  return sec.title;
+}
+/** One-off links (every count 1) say nothing about a rivalry: those sections are left out. */
+const worthShowing = (sec: GraphPayload) => sec.tool === "teammates" || sec.rows.some((r) => Number(r.dismissals ?? 0) >= 2);
 
 /** The chat card for a relational answer: the subgraph behind it, plus a way into the Network tab. */
 export function GraphChatCard({ card, onOpen }: { card: GraphCard; onOpen: () => void }) {
@@ -261,7 +284,7 @@ export function NetworkPanel({ onClose, onAsk }: { onClose: () => void; onAsk: (
   const [field, setField] = useState<{ catches: GraphPayload; drops: GraphPayload } | null>(null);
   const [kind, setKind] = useState<"bowler" | "batter">("bowler");
   const [ranks, setRanks] = useState<{ note: string; rows: Record<string, string | number>[] } | null>(null);
-  const [groups, setGroups] = useState<{ size: number; players: string[] }[] | null>(null);
+  const [outs, setOuts] = useState<Profile | null>(null);
   const [checks, setChecks] = useState<{ report: { section: string; check: string; value: string }[]; counts: Record<string, number> } | null>(null);
   const sq = season ? `season=${encodeURIComponent(season)}` : "";
 
@@ -286,7 +309,7 @@ export function NetworkPanel({ onClose, onAsk }: { onClose: () => void; onAsk: (
 
   useEffect(() => { if (tab === "fielding") get<{ catches: GraphPayload; drops: GraphPayload }>(`/api/graph/fielding?team=${team}&${sq}`).then(setField).catch(() => setField(null)); }, [tab, team, sq]);
   useEffect(() => { if (tab === "rankings") get<{ note: string; rows: Record<string, string | number>[] }>(`/api/graph/rankings?kind=${kind}&${sq}`).then(setRanks).catch(() => setRanks(null)); }, [tab, kind, sq]);
-  useEffect(() => { if (tab === "communities") get<{ groups: { size: number; players: string[] }[] }>(`/api/graph/communities?${sq}`).then((r) => setGroups(r.groups)).catch(() => setGroups(null)); }, [tab, sq]);
+  useEffect(() => { if (tab === "dismissals" && pid !== null) get<Profile>(`/api/graph/dismissals/${pid}?${sq}`).then(setOuts).catch(() => setOuts(null)); }, [tab, pid, sq]);
   useEffect(() => { if (tab === "checks") get<typeof checks>("/api/graph/status").then(setChecks).catch(() => setChecks(null)); }, [tab]);
 
   const web = field ? (metric === "drops" ? field.drops : field.catches) : null;
@@ -298,7 +321,7 @@ export function NetworkPanel({ onClose, onAsk }: { onClose: () => void; onAsk: (
         <code className="stats-command">uv run cricrag build-graph</code><p className="stats-note">{error}</p></div></div>;
   }
 
-  return <div className="stats-panel">
+  return <div className="stats-panel net-panel">
     <div className="stats-hero">
       <div className="hero-actions"><button className="back-link" onClick={onClose}>← Close</button></div>
       <p className="section-kicker">RELATIONAL GRAPH</p>
@@ -315,21 +338,19 @@ export function NetworkPanel({ onClose, onAsk }: { onClose: () => void; onAsk: (
       <button role="tab" aria-selected={tab === t.id} className={tab === t.id ? "active" : ""} key={t.id} onClick={() => setTab(t.id)}>{t.label}</button>)}
     </div>
     <div className="workspace-body net-body">
-      {tab === "rivalry" && <>
-        <form className="net-search" onSubmit={search}>
+      {(tab === "rivalry" || tab === "dismissals") && <form className="net-search" onSubmit={search}>
           <input aria-label="Player" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Player name" />
           <button>Show</button>
           {hits.length > 1 && <select aria-label="Pick a player" value={pid ?? ""} onChange={(e) => setPid(Number(e.target.value))}>
             {hits.map((h) => <option key={h.id} value={h.id}>{h.name} ({h.matches} matches)</option>)}</select>}
-        </form>
+        </form>}
+      {tab === "rivalry" && <>
         {player && <>
           <p className="stats-note">{player.name}: {player.faced.toLocaleString()} balls faced, {player.bowled.toLocaleString()} bowled in this archive.</p>
-          {player.sections.map((sec) => <section className="chat-card net-section" key={sec.title}>
-            <header><h3>{sec.title}</h3><button className="net-ask" onClick={() => onAsk(askFor(sec, player.name, season))}>Ask Pandit</button></header>
-            {sec.gap ? <p className="stats-note">{sec.gap}</p> : <>
-              {sec.tool === "catch_pairs" ? <Bipartite edges={sec.edges} nodes={sec.nodes} metric="dismissals" /> : <GraphView nodes={sec.nodes} edges={sec.edges} />}
-              <Lines lines={sec.lines} />
-            </>}
+          {player.sections.filter((sec) => !sec.gap && worthShowing(sec)).map((sec, i) => <section className="chat-card net-section" key={`${sec.tool}${i}`}>
+            <header><h3>{shortTitle(sec, player.name)}</h3><button className="net-ask" onClick={() => onAsk(askFor(sec, player.name, season))}>Ask Pandit</button></header>
+            {sec.tool === "catch_pairs" ? <Bipartite edges={sec.edges} nodes={sec.nodes} metric="dismissals" /> : <GraphView nodes={sec.nodes} edges={sec.edges} />}
+            <MiniTable sec={sec} name={player.name} />
           </section>)}
         </>}
       </>}
@@ -357,17 +378,21 @@ export function NetworkPanel({ onClose, onAsk }: { onClose: () => void; onAsk: (
           <button className={kind === "batter" ? "active" : ""} onClick={() => setKind("batter")}>Batters</button>
         </div>
         {ranks && <section className="chat-card net-section">
-          <header><h3>Network rank · {season || "all seasons"}</h3></header>
-          <p className="stats-note">{ranks.note}. {kind === "bowler" ? "A wicket counts for more when the batter is hard for other good bowlers to dismiss." : "Runs per dismissal count for more against bowlers who dismiss good batters."}</p>
-          <ol className="net-rank">{ranks.rows.map((r) => <li key={String(r.player)}>
-            <span>{r.player}</span><i style={{ width: `${(100 * Number(r.score)) / rankMax}%` }} /><b>{r.score}</b><small>{kind === "bowler" ? `${r.wickets} wkts` : `${r.runs} runs`}</small></li>)}</ol>
+          <header><h3>{kind === "bowler" ? "Quality wickets" : "Quality runs"} · {season || "all seasons"}</h3></header>
+          <p className="stats-note">{ranks.note}</p>
+          <table className="net-mini net-rank-table"><thead><tr><th>#</th><th>{kind === "bowler" ? "Bowler" : "Batter"}</th><th className="bar">{kind === "bowler" ? "Quality wkts" : "Quality runs"}</th>
+            {kind === "bowler" ? <><th>Wkts</th><th title="Batting positions 1-3">Top</th><th title="Positions 4-7">Middle</th><th title="Positions 8-11">Tail</th></> : <><th>Runs</th><th>Balls</th><th>Outs</th></>}</tr></thead>
+            <tbody>{ranks.rows.map((r, i) => <tr key={String(r.player)}><td>{i + 1}</td><td>{r.player}</td>
+              <td className="bar"><i style={{ width: `${(100 * Number(r.score)) / rankMax}%` }} /><b>{r.score}</b></td>
+              {kind === "bowler" ? <><td>{r.wickets}</td><td>{r["top order"]}</td><td>{r["middle order"]}</td><td>{r.tail}</td></> : <><td>{r.runs}</td><td>{r.balls}</td><td>{r.outs}</td></>}</tr>)}</tbody></table>
         </section>}
       </>}
-      {tab === "communities" && groups && <section className="chat-card net-section">
-        <header><h3>Teammate communities · {season || "all seasons"}</h3></header>
-        <p className="stats-note">Louvain clusters on the teammate graph (played for the same team in the same season). Names are ordered by matches played.</p>
-        {groups.map((g, i) => <div className="net-group" key={i}><b>{g.size} players</b><div>{g.players.map((p) => <span key={p}>{p}</span>)}</div></div>)}
-      </section>}
+      {tab === "dismissals" && outs && <>
+        {outs.batter.total === 0 && outs.bowler.total === 0 && <p className="stats-note">No bowler-credited wickets for {outs.name} {season ? `in ${season}` : "in the archive"}.</p>}
+        {outs.batter.total > 0 && <ProfileCard p={outs} side="batter" season={season} onAsk={onAsk} />}
+        {outs.bowler.total > 0 && <ProfileCard p={outs} side="bowler" season={season} onAsk={onAsk} />}
+        <p className="stats-note">Wickets credited to the bowler only: run outs are the fielder&apos;s and are left out. Bowling type from ESPN profiles (pace is every speed); top order = batting 1-3, middle = 4-7, tail = 8 and below.</p>
+      </>}
       {tab === "checks" && checks && <section className="chat-card net-section">
         <header><h3>How the graph was checked</h3></header>
         <table className="net-table"><tbody>{checks.report.map((r) => <tr key={r.check}><td>{r.section}</td><td>{r.check}</td><td className={r.value.includes("MISMATCH") ? "bad" : ""}>{r.value}</td></tr>)}</tbody></table>
@@ -375,6 +400,30 @@ export function NetworkPanel({ onClose, onAsk }: { onClose: () => void; onAsk: (
       </section>}
     </div>
   </div>;
+}
+
+type Side = { total: number; groups: { group: string; n: number; modes: Record<string, number> }[] };
+type Profile = { id: number; name: string; season: string | null; batter: Side; bowler: Side };
+const MODES = ["caught", "bowled", "lbw", "stumped", "hit wicket"];
+
+/** One player and his wicket profile: a radial picture (who or what got him, by count) and the same counts by mode. */
+function ProfileCard({ p, side, season, onAsk }: { p: Profile; side: "batter" | "bowler"; season: string; onAsk: (q: string) => void }) {
+  const s = p[side];
+  const nodes: GraphNode[] = [{ id: 0, label: p.name, role: side, center: true },
+    ...s.groups.map((g, i) => ({ id: i + 1, label: g.group, role: side === "batter" ? "bowler" : "batter" }))];
+  const edges: GraphEdge[] = s.groups.map((g, i) => ({ source: i + 1, target: 0, kind: "profile", dismissals: g.n }));
+  const modes = MODES.filter((m) => s.groups.some((g) => g.modes[m]));
+  const hi = Math.max(...s.groups.flatMap((g) => modes.map((m) => g.modes[m] ?? 0)));
+  const scope = season ? ` in ${season}` : "";
+  return <section className="chat-card net-section">
+    <header><h3>{side === "batter" ? `How ${p.name} got out · ${s.total} wickets` : `Whom ${p.name} dismissed · ${s.total} wickets`}</h3>
+      <button className="net-ask" onClick={() => onAsk(side === "batter" ? `How does ${p.name} get out against spin and pace${scope}?` : `Which batting positions has ${p.name} dismissed most${scope}?`)}>Ask Pandit</button></header>
+    <GraphView nodes={nodes} edges={edges} height={280} />
+    <table className="net-mini net-modes"><thead><tr><th>{side === "batter" ? "Bowling" : "Batter's place"}</th>{modes.map((m) => <th key={m}>{m}</th>)}<th>Total</th><th>Share</th></tr></thead>
+      <tbody>{s.groups.map((g) => <tr key={g.group}><th scope="row">{g.group}</th>
+        {modes.map((m) => { const v = g.modes[m] ?? 0; return <td key={m} className={v ? "hit" : ""} style={v ? { "--share": `${Math.round(15 + 70 * v / hi)}%` } as CSSProperties : undefined}>{v || ""}</td>; })}
+        <td className="total">{g.n}</td><td className="total">{Math.round((100 * g.n) / s.total)}%</td></tr>)}</tbody></table>
+  </section>;
 }
 
 function askFor(sec: GraphPayload, name: string, season: string): string {
@@ -385,7 +434,7 @@ function askFor(sec: GraphPayload, name: string, season: string): string {
   return `Which fielder-bowler pairs involve ${name}${s}?`;
 }
 
-type RankRow = { player: string; score: number; wickets?: number };
+type RankRow = { player: string; score: number; wickets?: number; "top order"?: number };
 
 /** Front page: one season's network in two small, read-only charts, with a way into the Network tab. */
 export function SeasonNetwork({ season, onOpen }: { season: number; onOpen: () => void }) {
@@ -405,16 +454,16 @@ export function SeasonNetwork({ season, onOpen }: { season: number; onOpen: () =
   const max = Math.max(1, ...(ranks?.rows ?? []).map((r) => r.score));
   return <section className="fp-section fp-network" aria-label={`IPL ${season} player network`}>
     <div className="fp-head fp-head-row">
-      <div><h3>The network</h3><p>Who dismissed whom in {season}, read as a graph: bowlers ranked by whose wickets they took, and the catches that linked fielders to bowlers.</p></div>
+      <div><h3>The network</h3><p>Who dismissed whom in {season}: bowlers ranked by the quality of the batters they got out, and the catches that linked fielders to bowlers.</p></div>
       <button className="fp-link" onClick={onOpen}>Open the network →</button>
     </div>
     <div className="fp-net-grid">
       <article className="fp-net-card">
-        <p className="section-kicker">NETWORK RANK · BOWLERS</p>
+        <p className="section-kicker">QUALITY WICKETS · BOWLERS</p>
         {ranks ? <ol className="net-rank compact">{ranks.rows.map((r) => <li key={r.player}>
-          <span>{r.player}</span><i style={{ width: `${(100 * r.score) / max}%` }} /><b>{r.score}</b><small>{r.wickets} wkts</small></li>)}</ol>
+          <span>{r.player}</span><i style={{ width: `${(100 * r.score) / max}%` }} /><b>{r.score}</b><small>{r.wickets} wkts · {r["top order"]} top order</small></li>)}</ol>
           : <div className="fp-net-skeleton" />}
-        <p className="stats-note">PageRank on the dismissal graph, min {ranks?.min_balls ?? 120} balls. A heuristic, not an official stat.</p>
+        <p className="stats-note">Each wicket weighted by the batter&apos;s average that season (a 40-average batter counts twice a 20). Min {ranks?.min_balls ?? 120} balls.</p>
       </article>
       <article className="fp-net-card">
         <p className="section-kicker">CATCHING PAIRS · C / ST X B Y</p>

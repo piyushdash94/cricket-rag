@@ -158,7 +158,8 @@ def test_news_keeps_ipl_stories_and_sorts_them():
         ("rules", "https://www."),
         ("records", "https://www."),
     ]
-    assert {r["kind"] for r in got["reading"]} == {"rules", "trends", "records"}
+    assert {r["kind"] for r in got["reading"]} == {"news", "rules", "trends", "records"}
+    assert {r["source"] for r in got["reading"]} <= {"ESPNcricinfo", "IPLT20", "The Daily Star"}  # never a wrong "ESPN"
     assert all(r["url"].startswith("https://") for r in got["reading"])
     assert articles(None, lambda: 1 / 0)["live"] == []  # offline: the reading list still shows
 

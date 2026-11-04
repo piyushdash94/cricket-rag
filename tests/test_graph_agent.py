@@ -112,7 +112,11 @@ def test_api(graph_db):
     f = c.get("/api/graph/fielding", params={"team": "CSK"}).json()
     assert f["catches"]["rows"][0]["fielder"] == "MS Dhoni"
     assert c.get("/api/graph/rankings", params={"kind": "nope"}).status_code == 400
-    assert c.get("/api/graph/communities").status_code == 200
+    assert c.get("/api/graph/communities").status_code == 404  # replaced by dismissal profiles
+    d = c.get("/api/graph/dismissals/12").json()  # Dhoni: out caught off Krunal Pandya's bowling
+    assert d["batter"]["total"] == 1 and d["batter"]["groups"][0]["modes"] == {"caught": 1}
+    r = c.get("/api/graph/rankings", params={"kind": "bowler"}).json()
+    assert "Quality wickets" in r["note"] and r["rows"] == []  # nobody bowled 300 balls in the fixture
 
 
 @pytest.mark.parametrize(

@@ -13,9 +13,12 @@ Q1 = "who had the best strike rate against left arm spinners in 2022?"
 
 def test_rate_ranking_needs_a_qualified_sample():
     bare = sample_problem(Q1, ["player", "strike_rate"], [("Obed McCoy", 350.0)])
-    assert bare and "runs, balls" in bare and "at least 60 balls" in bare  # both fixes in one retry
+    assert (
+        bare and "runs, balls" in bare and "at least 30 balls" in bare
+    )  # both fixes in one retry; matchup: 30
     tiny = sample_problem(Q1, ["player", "runs", "balls", "strike_rate"], [("Obed McCoy", 7, 2, 350.0)])
-    assert tiny and "at least 60 balls" in tiny
+    assert tiny and "at least 30 balls" in tiny
+    assert qualifier("best strike rate in 2022") == 60  # not a matchup: the general bar
     assert sample_problem(Q1, ["player", "runs", "balls", "sr"], [("Shubman Gill", 100, 65, 153.8)]) is None
     asked = "best strike rate v left-arm spin in 2022, minimum 30 balls"
     assert qualifier(asked) == 30
@@ -120,7 +123,7 @@ def test_footnote_states_sample_filter_and_qualification():
     }
     assert (
         footnote(Q1, res)
-        == "Top row: 100 runs, 65 balls. Bowlers: left-arm spin. Qualification: at least 60 balls."
+        == "Top row: 100 runs, 65 balls. Bowlers: left-arm spin. Qualification: at least 30 balls."
     )
     assert (
         footnote(
@@ -239,3 +242,34 @@ def test_batter_matchup_must_return_dismissals():
     q = "how does Rohit Sharma bat against spin?"
     assert "dismissals" in sample_problem(q, ["runs", "balls", "sr"], [(895, 795, 112.58)], sql)
     assert sample_problem(q, ["runs", "balls", "dismissals", "sr"], [(895, 795, 22, 112.58)], sql) is None
+
+
+def test_spin_types_map_every_archive_style():
+    from cricrag.styles import spin_type_sql
+
+    con = duckdb.connect()
+    con.execute("""create table s as select * from (values ('spin', 'right-arm offbreak'), ('spin', 'legbreak googly'),
+        ('spin', 'legbreak'), ('spin', 'slow left-arm orthodox'), ('spin', 'left-arm wrist-spin'),
+        ('pace', 'right-arm fast')) t(bowl_kind, bowl_style)""")
+    got = [r[0] for r in con.execute(f"select {spin_type_sql('s')} from s").fetchall()]
+    assert got == ["off-spin", "leg-spin", "leg-spin", "left-arm orthodox", "left-arm wrist-spin", None]
+
+
+def test_footnote_names_spin_type_and_hand():
+    from cricrag.finder import footnote
+
+    res = {
+        "sql": "select ... where batter = 'Virat Kohli' and spin_type = 'leg-spin'",
+        "cols": ["runs", "balls", "dismissals"],
+        "rows": [(700, 520, 12)],
+    }
+    assert (
+        footnote("Kohli against leg-spin", res)
+        == "Sample: 700 runs, 520 balls, 12 dismissals. Bowlers: leg-spin."
+    )
+    res = {
+        "sql": "select ... where bowler = 'Jasprit Bumrah' and bat_hand = 'left'",
+        "cols": ["balls", "runs", "wickets", "economy"],
+        "rows": [(900, 1000, 40, 6.67)],
+    }
+    assert footnote("Bumrah economy against left-handers", res).endswith("Batters: left-handed.")

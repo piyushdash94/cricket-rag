@@ -5,7 +5,7 @@ import type { CSSProperties, FormEvent, ReactNode } from "react";
 import { ClarifyChatCard, ScopeChatCard, StatsChatCard, StatsPanel } from "./stats";
 import type { StatsCard, ClarifyCard, ScopeCard } from "./stats";
 import { OverChart, PartnershipChart, PhaseChart, PitchCard, usePar, Worm } from "./match-charts";
-import { FrontPage } from "./home";
+import { FrontPage, NewsCarousel } from "./home";
 import { inkOn, lowOnBanner, readable, setInkTheme } from "./teamcolor";
 import { GraphChatCard, NetworkPanel } from "./network";
 import type { GraphCard } from "./network";
@@ -244,6 +244,7 @@ export default function Home() {
   const [matchTab, setMatchTab] = useState<MatchTab>("overview");
   const [inningFilter, setInningFilter] = useState(0);
   const [docsOpen, setDocsOpen] = useState(false);
+  const [newsOpen, setNewsOpen] = useState(false);
   const [docs, setDocs] = useState<DocsCatalog | null>(null);
   const [traceOpen, setTraceOpen] = useState(false);
   const [agent, setAgent] = useState<AgentStatus | null>(null);
@@ -410,6 +411,7 @@ export default function Home() {
       if (event.key === "Escape") {
         if (traceOpen) setTraceOpen(false);
         else if (docsOpen) setDocsOpen(false);
+        else if (newsOpen) setNewsOpen(false);
         return;
       }
       const target = event.target as HTMLElement | null;
@@ -422,7 +424,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [docsOpen, traceOpen]);
+  }, [docsOpen, traceOpen, newsOpen]);
 
   async function copyText(text: string, message: string) {
     try {
@@ -528,6 +530,7 @@ export default function Home() {
           <button className={!showStats && !showNetwork ? "active" : ""} onClick={() => { setShowStats(false); setShowNetwork(false); setMobileView(selected ? "match" : "matches"); }}>Match centre</button>
           <button className={showStats ? "active" : ""} onClick={openStats} aria-label="Open IPL stats">Stats</button>
           <button className={showNetwork ? "active" : ""} onClick={openNetwork} aria-label="Open the relational graph">Network</button>
+          <button className={newsOpen ? "active" : ""} onClick={() => setNewsOpen(true)} aria-label="Open IPL news">News</button>
           <button onClick={() => setDocsOpen(true)} aria-label="Open documentation">Docs</button>
         </nav>
         <details className="theme-picker" ref={themeMenu}>
@@ -601,7 +604,7 @@ export default function Home() {
           onClose={() => { setShowStats(false); setMobileView("chat"); }} />}
         {showNetwork && <NetworkPanel onClose={() => { setShowNetwork(false); setMobileView("chat"); }}
           onAsk={(question) => { setMobileView("chat"); void sendChat(undefined, question); }} />}
-        {!selected && !showStats && !showNetwork && <div className="workspace-body fp-body"><FrontPage season={season} onSeason={setSeason} news={news} onNetwork={openNetwork}
+        {!selected && !showStats && !showNetwork && <div className="workspace-body fp-body"><FrontPage season={season} onSeason={setSeason} news={news} onNetwork={openNetwork} onNews={() => setNewsOpen(true)}
           onOpen={(ref) => { if (ref.series_slug && ref.match_slug) openBySlugs(ref.series_slug, ref.match_slug); }}
           onAsk={(question) => { setMobileView("chat"); void sendChat(undefined, question); }}
           onChat={() => setMobileView("chat")}
@@ -638,6 +641,7 @@ export default function Home() {
         })}
       </nav>
       <DocsDrawer open={docsOpen} docs={docs} onClose={() => setDocsOpen(false)} />
+      <NewsCarousel news={news} season={season} open={newsOpen} onClose={() => setNewsOpen(false)} />
       <TraceDrawer open={traceOpen} graph={graph} trace={trace} loading={chatLoading} onClose={() => setTraceOpen(false)} />
       <div className={`toast${toast ? " show" : ""}`} role="status" aria-live="polite">{toast}</div>
     </div>

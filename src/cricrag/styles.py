@@ -34,6 +34,21 @@ SPIN_WORDS = (
 )
 PACE_WORDS = ("fast", "medium", "seam")
 
+# Spin type from ESPN's style: the archive has exactly five spin styles, each mapping to one type.
+# Finger spin = off-spin and left-arm orthodox; wrist spin = leg-spin and left-arm wrist-spin.
+SPIN_TYPES = ("off-spin", "leg-spin", "left-arm orthodox", "left-arm wrist-spin")
+
+
+def spin_type_sql(s: str = "s") -> str:
+    """SQL for the spin type of a player_styles row aliased `s` (NULL for pace and non-bowlers)."""
+    st = f"lower({s}.bowl_style)"
+    return f"""CASE WHEN {s}.bowl_kind <> 'spin' THEN NULL
+        WHEN {st} LIKE '%wrist%' OR {st} LIKE '%chinaman%' THEN 'left-arm wrist-spin'
+        WHEN {st} LIKE '%orthodox%' THEN 'left-arm orthodox'
+        WHEN {st} LIKE '%leg%' OR {st} LIKE '%googly%' THEN 'leg-spin'
+        WHEN {st} LIKE '%off%' THEN 'off-spin' END"""
+
+
 # Anyone with a delivery, a scorecard line or a catch is a player; officials in player_styles are not.
 PLAYERS = """SELECT batter_id AS id FROM balls UNION SELECT bowler_id FROM balls
     UNION SELECT player_id FROM cs_batting_card UNION SELECT player_id FROM cs_bowling_card"""

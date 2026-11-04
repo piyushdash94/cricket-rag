@@ -8,6 +8,7 @@ The archive is attached read-only and stays the source of truth; this file is re
   fielding_dismissal  fielder -> batter   caught / stumped / run out (Cricsheet scorecard), with the bowler
   dropped             fielder -> batter   audited drops / misfields (ipl_fielding), runs added afterwards
   played_for          player  -> team     matches per season
+  wicket_detail       bowler  -> batter   each bowler-credited wicket: mode, bowling type, the batter's position
 
 `graph_checks` re-counts each edge table straight from `balls` / `cs_fielding`; every check must be equal
 before anything reads the graph (Rule 1: numbers come from SQL, and the graph must agree with it).
@@ -29,6 +30,7 @@ from cricrag.graph.identity import (
     resolve_fielding_csv,
     roster_sql,
 )
+from cricrag.styles import spin_type_sql
 
 # canonical id: Cricinfo id, or the merged one for an unregistered Cricsheet id
 CANON = "coalesce((SELECT to_id FROM id_merge WHERE from_id = {0}), {0})"
@@ -76,7 +78,28 @@ EDGES = {
         GROUP BY ALL""",
 }
 
+
 # Each pair: (edge-table total, the same count taken straight from the archive). They must be equal.
+# Each wicket the bowler is credited with, by mode, bowling type (pace, or the spin type) and the batter's position
+# (1-3 top order, 4-7 middle, 8+ tail; 12 and 13 are impact substitutes). Run outs are the fielder's, not here.
+def wicket_detail_sql(styles: bool, positions: bool) -> str:
+    kind = f"CASE WHEN s.bowl_kind = 'pace' THEN 'pace' ELSE {spin_type_sql('s')} END" if styles else "NULL"
+    return f"""CREATE OR REPLACE TABLE wicket_detail AS
+    SELECT {CANON.format("b.bowler_id")} AS bowler_id, {CANON.format("b.player_out_id")} AS batter_id, b.season,
+           b.bowl AS team, CASE lower(b.dismissal_type) WHEN 'leg before wicket' THEN 'lbw'
+                                ELSE lower(b.dismissal_type) END AS mode,
+           coalesce({kind}, 'unknown') AS bowl_type,
+           {"r.position" if positions else "NULL::INT"} AS position,
+           CASE WHEN position <= 3 THEN 'top order' WHEN position <= 7 THEN 'middle order'
+                WHEN position IS NOT NULL THEN 'tail' END AS order_band,
+           count(*) AS n
+    FROM gb b
+    {"LEFT JOIN cb.player_styles s ON s.player_id = b.bowler_id" if styles else ""}
+    {"LEFT JOIN cb.ref_batting r ON r.match_id = b.match_id AND r.inning = b.inning AND r.player_id = b.player_out_id" if positions else ""}
+    WHERE b.bowler_wicket AND b.bowler_id IS NOT NULL AND b.player_out_id IS NOT NULL
+    GROUP BY ALL"""
+
+
 CHECKS = {
     "bowled_to.balls == legal-to-batter balls": (
         "SELECT sum(balls) FROM bowled_to",
@@ -140,6 +163,9 @@ def build(
             con.execute(f"CREATE OR REPLACE TABLE {name} AS {sql}")
             (n,) = con.execute(f"SELECT count(*) FROM {name}").fetchone() or (0,)
             log(f"  {name}: {n} edges")
+        con.execute(
+            wicket_detail_sql(has_table(con, "cb", "player_styles"), has_table(con, "cb", "ref_batting"))
+        )
         # who kept wicket: a player with a stumping for that team in that season (Cricsheet has no keeper flag)
         con.execute("""CREATE OR REPLACE TABLE keepers AS
             SELECT DISTINCT fielder_id AS player_id, team, season FROM fielding_dismissal
@@ -169,6 +195,12 @@ def graph_checks(con) -> dict[str, tuple[int, int, bool]]:
         a = int(con.execute(edge_sql).fetchone()[0] or 0)
         b = int(con.execute(base_sql).fetchone()[0] or 0)
         out[name] = (a, b, a == b)
+    if con.execute(
+        "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'wicket_detail' AND database_name = current_database()"
+    ).fetchone()[0]:
+        a = int(con.execute("SELECT sum(n) FROM wicket_detail").fetchone()[0] or 0)
+        b = int(con.execute("SELECT sum(n) FROM dismissed").fetchone()[0] or 0)
+        out["wicket_detail.n == dismissed.n"] = (a, b, a == b)
     if has_table(con, "cb", "player_styles"):  # every player: a batting hand and pace / spin / none
         (bad,) = con.execute(STYLES_CHECK).fetchone() or (0,)
         out["players without a batting hand or bowling type"] = (int(bad or 0), 0, not bad)

@@ -346,21 +346,26 @@ def connection(con, a: int, b: int) -> Evidence:
 
 
 def ranking(con, kind: str = "bowler", seasons=None, top: int = 10) -> Evidence:
-    fn = gx.bowler_rank if kind == "bowler" else gx.batter_rank
-    rows = fn(con, seasons, top=top)
-    what = "wickets" if kind == "bowler" else "runs"
+    """Quality wickets (bowlers) or quality runs (batters): one stated weight, not a black-box score."""
+    rows = (gx.bowler_rank if kind == "bowler" else gx.batter_rank)(con, seasons, top=top)
     least = gx.qualify(seasons, None)
-    ev = Evidence(
-        "ranking",
-        title=f"Network rank of {kind}s, min {least} balls (PageRank heuristic, not an official stat)",
+    what = "quality wickets" if kind == "bowler" else "quality runs"
+    how = (
+        "each wicket weighted by the batter's average in the same seasons (a wicket of a batter averaging 40 counts twice one averaging 20)"
+        if kind == "bowler"
+        else "runs weighted by how hard each bowler was to score off per wicket, against the league"
     )
+    ev = Evidence("ranking", title=f"{kind.title()}s by {what} {_scope(seasons)}, min {least} balls")
     if rows:
-        ev.add(
-            f"Network ranking of {kind}s {_scope(seasons)}, minimum {least} balls (PageRank heuristic, not an official stat)"
-        )
-    for i, (name, score, n) in enumerate(rows, 1):
-        ev.add(f"#{i} {name}: network score {score} ({n} {what} {_scope(seasons)})",
-               dict(rank=i, player=name, score=score, **{what: n}))  # fmt: skip
+        ev.add(f"{kind.title()}s ranked by {what} {_scope(seasons)}, minimum {least} balls: {how}")
+    for i, r in enumerate(rows, 1):
+        if kind == "bowler":
+            ev.add(f"#{i} {r['player']}: {r['score']} quality wickets from {_n(r['wickets'], 'wicket')} "
+                   f"({r['top order']} top order, {r['middle order']} middle order, {r['tail']} tail)",
+                   dict(rank=i, **r))  # fmt: skip
+        else:
+            ev.add(f"#{i} {r['player']}: {r['score']} quality runs from {r['runs']} runs off {r['balls']} balls",
+                   dict(rank=i, **r))  # fmt: skip
     if not rows:
-        ev.gap = f"Not enough {kind} data {_scope(seasons)} for a network ranking."
+        ev.gap = f"Not enough {kind} data {_scope(seasons)} for a ranking."
     return ev

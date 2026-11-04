@@ -33,7 +33,7 @@ items = [
  ("Who dropped the most catches off Dwayne Bravo's bowling?", ["MS Dhoni"]),
  ("Who has Ravindra Jadeja played with the most?", ["MS Dhoni"]),
  ("How is Virat Kohli connected to Rashid Khan?", ["Mahipal Lomror"]),
- ("Show the network rank of bowlers in 2024", ["Mohammed Siraj"]),
+ ("Show the network rank of bowlers in 2024", ["Harshal Patel"]),  # quality wickets; checked against raw-archive SQL
 ]
 llm = GroqClient(s.groq_api_key, s.groq_models, s.cache_dir / "llm", max_wait=s.groq_max_wait)
 agent = PanditGraph(load_catalog(), s.graph_db, llm)

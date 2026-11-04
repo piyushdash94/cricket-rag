@@ -37,7 +37,10 @@ DROP = re.compile(r"\b(drop(s|ped|ping)?|put down|spilled|grassed)\b", re.I)
 NEMESIS = re.compile(r"\b(nemesis|nemeses|trouble[sd]?|kryptonite|struggle[sd]?|got (him|\w+) out most|dismiss(ed|es)? \w+ (the )?most|most dismissals of|owns?|bogey)\b", re.I)  # fmt: skip
 BUNNY = re.compile(r"\b(bunny|bunnies|victims?|favou?rite (victim|wicket)|whom did|who did \w+ dismiss|dismissed most by)\b", re.I)  # fmt: skip
 H2H = re.compile(r"\b(vs\.?|versus|against|head[- ]to[- ]head|h2h|match-?up|record (against|vs)|faced?|face-?off|battle|rivalry)\b", re.I)  # fmt: skip
-RANK = re.compile(r"\b(page ?rank|network (rank|score)|centrality|most influential|graph rank)\b", re.I)
+RANK = re.compile(
+    r"\b(page ?rank|network (rank|score)|centrality|most influential|graph rank|quality (wickets|runs))\b",
+    re.I,
+)
 # Pandit already answers these well: batting partnerships, scorecards, and match moments.
 PANDIT_FIRST = re.compile(r"\b(partnerships?|stand|put on|added together|scorecard|turn(ed|ing)?|final|how was \w+ out|batting together)\b", re.I)  # fmt: skip
 PAIR_WORDS = re.compile(r"\b(pairs?|partners?|combination|combo|c ?& ?b|duo)\b", re.I)
@@ -86,7 +89,7 @@ WRITER = """You are Pandit, an IPL analyst. Answer the question using only the E
 - End every sentence that states a fact with its evidence tag(s) exactly as written, e.g. [G1] or [G1][G2].
 - Use only the numbers shown, written as digits; never add, subtract, average or derive new ones.
 - If a line starts "Tied for the most", name every tied player and say they are tied; never crown one of them.
-- If a line says "network score" or "PageRank heuristic", call it a network ranking, not an official stat.
+- For quality wickets or quality runs, say once how they are weighted, in the evidence's words.
 - If the evidence does not answer the question, say exactly what is missing."""
 
 GTAG = re.compile(r"\[(G\d+)\]")
