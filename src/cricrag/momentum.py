@@ -67,7 +67,7 @@ def _window(rows: list[dict[str, Any]], start: int, end: int) -> dict[str, Any]:
         "score_after": f"{chunk[-1]['_runs']}/{chunk[-1]['_wickets']}",
         "boundaries": sum(1 for ball in chunk if ball.get("boundary")),
         "dots": sum(1 for ball in chunk if _legal(ball) and int(ball.get("runs") or 0) == 0),
-        "dismissed": [ball.get("title", "").split(" to ")[-1] for ball in chunk if ball.get("wicket")],
+        "dismissed": [ball.get("out") or ball.get("title", "").split(" to ")[-1] for ball in chunk if ball.get("wicket")],
         "bowlers": sorted(
             {
                 ball.get("bowler") or ball.get("title", "").split(" to ")[0]
@@ -207,7 +207,11 @@ def innings_shifts(
                         **window,
                         "favours": batting if swing > 0 else bowling,
                         "magnitude": abs(swing),
-                        "headline": f"{window['runs']} runs and {window['wickets']} wicket{'s' if window['wickets'] != 1 else ''} when {round(par)} were needed at {round(required, 2)} an over",
+                        # needed = target - score at the start (not `par`, the share of it due in these overs)
+                        "headline": f"{window['runs']} runs and {window['wickets']} wicket{'s' if window['wickets'] != 1 else ''} when {needed} were needed off {remaining} balls ({round(required, 2)} an over; par for these {window['balls']} balls {round(par)})",
+                        "needed_before": needed,
+                        "balls_left_before": remaining,
+                        "par": round(par, 1),
                         "required_rate_before": round(required, 2),
                         "required_rate_after": required_after,
                     }

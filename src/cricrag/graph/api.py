@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from cricrag.graph import explore as gx
 from cricrag.graph import tools as gt
+from cricrag.styles import SPIN_TYPES
 
 
 def router(db_path: Callable[[], Path]) -> APIRouter:
@@ -27,7 +28,13 @@ def router(db_path: Callable[[], Path]) -> APIRouter:
             state["con"], state["path"] = duckdb.connect(str(path), read_only=True), str(path)
         return state["con"]
 
-    def seasons(season: str | None) -> list[str] | None:
+    def seasons(season: str | None, year: int | None = None) -> list[str] | None:
+        """An archive season ('2007/08'), or the IPL year the front page uses (2008)."""
+        if year is not None and not season:
+            row = con().execute("SELECT season FROM season_years WHERE year = ?", [year]).fetchone()
+            if not row:
+                raise HTTPException(404, f"no IPL season {year} in the graph")
+            return [row[0]]
         return [season] if season else None
 
     @r.get("/status")
@@ -90,20 +97,56 @@ def router(db_path: Callable[[], Path]) -> APIRouter:
                     "drops": drops.as_payload() | {"gap": drops.gap}}  # fmt: skip
 
     @r.get("/rankings")
-    def rankings(kind: str = "bowler", season: str | None = None, top: int = 15):
+    def rankings(kind: str = "bowler", season: str | None = None, year: int | None = None, top: int = 15):
         if kind not in ("bowler", "batter"):
             raise HTTPException(400, "kind is bowler or batter")
         with lock:
-            fn = gx.bowler_rank if kind == "bowler" else gx.batter_rank
-            what = "wickets" if kind == "bowler" else "runs"
-            rows = fn(con(), seasons(season), top=min(top, 50))
-            return {"kind": kind, "season": season, "note": "PageRank heuristic, not an official stat",
-                    "rows": [{"player": n, "score": s, what: v} for n, s, v in rows]}  # fmt: skip
+            picked = seasons(season, year)
+            rows = (gx.bowler_rank if kind == "bowler" else gx.batter_rank)(con(), picked, top=min(top, 50))
+            least = gx.qualify(picked, None)
+            note = (
+                "Quality wickets: each wicket weighted by the batter's average in the same seasons, so a wicket "
+                "of a batter averaging 40 counts twice one averaging 20"
+                if kind == "bowler"
+                else "Quality runs: each run weighted by how hard that bowler was to score off per wicket, "
+                "against the league (runs off a miserly bowler count for more)"
+            )
+            return {"kind": kind, "season": picked[0] if picked else None, "min_balls": least,
+                    "note": f"{note}. Min {least} balls.", "rows": rows}  # fmt: skip
 
-    @r.get("/communities")
-    def communities(season: str | None = None):
+    @r.get("/dismissals/{pid}")
+    def dismissals(pid: int, season: str | None = None):
+        """How a player gets out (by bowling type) and whom he dismisses (by batting order), each split by mode."""
         with lock:
-            groups = gx.communities(con(), seasons(season), min_size=4)
-            return {"season": season, "groups": [{"size": len(g), "players": g[:12]} for g in groups[:10]]}
+            c = con()
+            name = gt.name_of(c, pid)
+            prof = gx.dismissal_profile(c, pid, seasons(season))
+
+            def side(rows: list[tuple[str, str, int]], order: tuple[str, ...]) -> dict:
+                groups: dict[str, dict] = {}
+                for g, mode, n in rows:
+                    e = groups.setdefault(g, {"group": g, "n": 0, "modes": {}})
+                    e["n"] += n
+                    e["modes"][mode] = e["modes"].get(mode, 0) + n
+                ranked = sorted(
+                    groups.values(), key=lambda e: order.index(e["group"]) if e["group"] in order else 99
+                )
+                return {"total": sum(e["n"] for e in ranked), "groups": ranked}
+
+            return {"id": pid, "name": name, "season": season,
+                    "batter": side(prof["batter"], ("pace", *SPIN_TYPES, "unknown")),
+                    "bowler": side(prof["bowler"], gx.BANDS)}  # fmt: skip
+
+    @r.get("/pairs")
+    def pairs(season: str | None = None, year: int | None = None, top: int = 6):
+        """The league's caught / stumped fielder-bowler pairs (the front page's catching web)."""
+        with lock:
+            picked = seasons(season, year)
+            ev = gt.catch_pairs(con(), seasons=picked, top=min(top, 25))
+            return ev.as_payload() | {
+                "gap": ev.gap,
+                "lines": ev.lines,
+                "season": picked[0] if picked else None,
+            }
 
     return r

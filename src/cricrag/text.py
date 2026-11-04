@@ -15,6 +15,20 @@ def strip_html(text: str | None) -> str:
     return _WS.sub(" ", html.unescape(_TAG.sub(" ", text or ""))).strip()
 
 
+_COMMENT = re.compile(r"<!--.*?(-->|$)", re.S)
+_BLOCK = re.compile(r"<(script|style|iframe|blockquote)\b.*?(</\1>|$)", re.I | re.S)
+SNIPPET_CHARS = 300  # ESPN commentary is shown as short, cited snippets only (Rules.md 17)
+
+
+def snippet(text: str | None, limit: int = SNIPPET_CHARS) -> str:
+    """Plain text for display: no HTML, comments or embeds, at most `limit` characters, cut at a word."""
+    out = strip_html(_BLOCK.sub(" ", _COMMENT.sub(" ", text or "")))
+    if len(out) <= limit:
+        return out
+    cut = out[: limit + 1].rsplit(" ", 1)[0].rstrip(" ,;:-")
+    return (cut or out[:limit]) + "…"
+
+
 def bold_spans(text: str | None) -> list[str]:
     """Commentators bold the notable event of a ball; the fielding work measured it as a precision signal."""
     return [strip_html(m.group(2)) for m in _BOLD.finditer(text or "") if strip_html(m.group(2))]

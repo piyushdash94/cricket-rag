@@ -370,7 +370,7 @@ export function StatsPanel({ season, seasons, matchOpen, onBackToMatch, onClose 
     </form>}
 
     <div className="workspace-body">
-      {tab === "leaders" && <div className="overview-grid">
+      {tab === "leaders" && <div className="overview-grid leaders-grid">
         <Blocks path={`/api/stats/batting?${yearParam}${teamParam}sort=${batSort}&limit=10`} onPlayer={openPlayer} compact />
         <Blocks path={`/api/stats/bowling?${yearParam}${teamParam}sort=${bowlSort}&limit=10`} onPlayer={openPlayer} compact />
       </div>}

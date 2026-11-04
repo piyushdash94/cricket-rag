@@ -64,3 +64,12 @@ def test_follow_up_carries_entities(catalog):
     ]
     f = build_frame("And in 2017?", catalog, hist)
     assert f.players == ["Virat Kohli"] and f.seasons == ["2017"]
+
+
+def test_while_is_not_typo_corrected_to_a_player(catalog):
+    from cricrag.entities import Catalog, Player, link_players
+
+    cat = Catalog(catalog.season_years, catalog.team_codes, [*catalog.players, Player("Cameron White", 900)])
+    assert link_players("Who troubled Kohli the most while he batted for RCB?", cat).players == [
+        "Virat Kohli"
+    ]

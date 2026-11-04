@@ -217,18 +217,36 @@ def test_explore(graph):
         ("MS Dhoni", "Ravindra Jadeja"),
         ("Hardik Pandya", "Krunal Pandya"),
     }
-    assert [r[0] for r in gx.bowler_rank(con, min_balls=0)]  # runs and returns names
+    ranked = gx.bowler_rank(con, min_balls=0)
+    assert {r["player"] for r in ranked} >= {"Deepak Chahar", "Ravindra Jadeja"}
+    assert (
+        sum(r["wickets"] for r in ranked) == 3
+    )  # every bowler-credited wicket; the run out is the fielder's
+    assert gx.batter_rank(con, min_balls=0)[0]["player"]
+    prof = gx.dismissal_profile(con, 1)
+    assert prof["batter"] == [("unknown", "caught", 1)]  # no styles in this archive: the type is unknown
     assert gx.find_player(con, "varma")[0][1] == "Tilak Varma"
-    assert gx.communities(con, min_size=2)  # MI and CSK clusters
 
 
-def test_pagerank_matches_networkx_reference():
-    import networkx as nx
+def test_keeper_is_whoever_stumped_for_that_side_that_season(graph):
+    from cricrag.graph import tools as gt
 
-    g = nx.DiGraph()
-    g.add_weighted_edges_from([(1, 2, 3.0), (2, 3, 1.0), (3, 1, 2.0), (1, 3, 1.0), (4, 1, 1.0)])
-    pr = gx.pagerank(g)
-    assert abs(sum(pr.values()) - 1) < 1e-9
-    # reference values from nx.pagerank(g, weight="weight") with scipy installed
-    ref = {1: 0.3577, 2: 0.2655, 3: 0.3392, 4: 0.0375}
-    assert all(abs(pr[k] - v) < 5e-4 for k, v in ref.items()), pr
+    con, _ = graph
+    assert con.execute("select player_id, team, season from keepers").fetchall() == [(12, "CSK", "2024")]
+    ev = gt.catch_pairs(con, team="CSK")
+    kept = {r["fielder"]: r["keeper"] for r in ev.rows}
+    assert kept == {"MS Dhoni": True}
+    assert all(
+        "(wicketkeeper)" in line for line in ev.lines if line.startswith("caught or stumped by MS Dhoni")
+    )
+    assert next(n for n in ev.nodes if n["label"] == "MS Dhoni")["keeper"] is True
+    assert gt.catch_pairs(con, team="MI").rows[0]["keeper"] is False  # Hardik caught, never stumped
+
+
+def test_connection_runs_on_the_teammate_graph(graph):
+    from cricrag.graph import tools as gt
+
+    con, _ = graph
+    assert gx.teammate_graph(con).has_edge(1, 2)  # Rohit and Hardik, MI 2024
+    ev = gt.connection(con, 1, 10)  # Rohit (MI) to Deepak Chahar (CSK): only a match links them
+    assert ev.tool == "connection"

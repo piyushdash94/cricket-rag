@@ -58,6 +58,13 @@ def _n(k: int, word: str) -> str:
     return f"{k} {word}es" if word.endswith(("x", "s", "ch")) else f"{k} {word}s"
 
 
+def _tie(ev: Evidence, names: list[str], values: list[int], what: str) -> None:
+    """State a shared top value as a tie, so the writer can't crown one of several equal leaders."""
+    top = [n for n, v in zip(names, values, strict=True) if v == values[0]]
+    if len(top) > 1:
+        ev.add(f"Tied for the most {what} ({values[0]}): {', '.join(top)}")
+
+
 def _scope(seasons: list[str] | None) -> str:
     return f"in {', '.join(seasons)}" if seasons else "across all IPL seasons in the archive"
 
@@ -162,6 +169,7 @@ def nemesis(
     if not rows:
         ev.gap = f"No bowler has dismissed {tn} {_scope(seasons)}."
         return ev
+    _tie(ev, [r[1] for r in rows], [r[2] for r in rows], "dismissals")
     for pid, bn, d, b, r, sr in rows:
         ev.add(f"{bn} dismissed {tn} {_n(d, 'time')}{f' while {tn} batted for {team}' if team else ''} {_scope(seasons)}, conceding {r} runs in {b} balls (strike rate {sr})",
                dict(bowler=bn, dismissals=d, balls=b, runs=r, strike_rate=sr))  # fmt: skip
@@ -189,6 +197,7 @@ def bunnies(
     if not rows:
         ev.gap = f"{bn} has not dismissed any batter {_scope(seasons)}."
         return ev
+    _tie(ev, [r[1] for r in rows], [r[2] for r in rows], "dismissals")
     for pid, tn, d, b, r, sr in rows:
         ev.add(f"{bn} dismissed {tn} {_n(d, 'time')}{f' while bowling for {team}' if team else ''} {_scope(seasons)}, conceding {r} runs in {b} balls (strike rate {sr})",
                dict(batter=tn, dismissals=d, balls=b, runs=r, strike_rate=sr))  # fmt: skip
@@ -199,6 +208,12 @@ def bunnies(
 
 
 # ------------------------------------------------------------------ fielding
+
+
+# the fielder kept wicket for that side in a season of these rows (made a stumping that season);
+# keepers is unique per (player, team, season), so the join never duplicates a row
+_KEPT = "bool_or(k.player_id IS NOT NULL) AS kept"
+_KEEPERS = "LEFT JOIN keepers k ON k.player_id = d.fielder_id AND k.team = d.team AND k.season = d.season"
 
 
 def catch_pairs(con, fielder: int | None = None, bowler: int | None = None, team: str | None = None,
@@ -212,9 +227,9 @@ def catch_pairs(con, fielder: int | None = None, bowler: int | None = None, team
             params.append(val)
     rows = con.execute(
         f"""SELECT d.fielder_id, f.name, d.bowler_id, b.name, sum(d.n)::INT n,
-                   sum(CASE WHEN d.kind = 'stumped' THEN d.n ELSE 0 END)::INT st
+                   sum(CASE WHEN d.kind = 'stumped' THEN d.n ELSE 0 END)::INT st, {_KEPT}
             FROM fielding_dismissal d JOIN people f ON f.player_id = d.fielder_id
-            JOIN people b ON b.player_id = d.bowler_id
+            JOIN people b ON b.player_id = d.bowler_id {_KEEPERS}
             WHERE {" AND ".join(where)} GROUP BY 1, 2, 3, 4 ORDER BY n DESC, 2 LIMIT {int(top)}""",
         params,
     ).fetchall()
@@ -223,11 +238,13 @@ def catch_pairs(con, fielder: int | None = None, bowler: int | None = None, team
     if not rows:
         ev.gap = f"No caught or stumped dismissals match that {_scope(seasons)}."
         return ev
-    for fid, fn, bid, bn, n, st in rows:
+    _tie(ev, [f"{r[1]} off {r[3]}" for r in rows], [r[4] for r in rows], "dismissals")
+    for fid, fn, bid, bn, n, st, kept in rows:
         extra = f" ({st} stumpings)" if st else ""
-        ev.add(f"caught or stumped by {fn} off {bn}: {_n(n, 'dismissal')}{extra} {_scope(seasons)}",
-               dict(fielder=fn, bowler=bn, dismissals=n, stumpings=st))  # fmt: skip
-        ev.node(fid, fn, "fielder")
+        wk = " (wicketkeeper)" if kept else ""
+        ev.add(f"caught or stumped by {fn}{wk} off {bn}: {_n(n, 'dismissal')}{extra} {_scope(seasons)}",
+               dict(fielder=fn, bowler=bn, dismissals=n, stumpings=st, keeper=bool(kept)))  # fmt: skip
+        ev.node(fid, fn, "fielder", keeper=bool(kept))
         ev.node(bid, bn, "bowler")
         ev.edges.append(
             {"source": fid, "target": bid, "kind": "caught_off", "dismissals": n, "stumpings": st}
@@ -245,8 +262,9 @@ def drops(con, fielder: int | None = None, bowler: int | None = None, team: str 
             where.append(f"{col} = ?")
             params.append(val)
     rows = con.execute(
-        f"""SELECT d.fielder_id, f.name, d.bowler_id, b.name, sum(d.n)::INT n, sum(d.runs_after)::INT ra
+        f"""SELECT d.fielder_id, f.name, d.bowler_id, b.name, sum(d.n)::INT n, sum(d.runs_after)::INT ra, {_KEPT}
             FROM dropped d JOIN people f ON f.player_id = d.fielder_id JOIN people b ON b.player_id = d.bowler_id
+            {_KEEPERS}
             WHERE {" AND ".join(where)} GROUP BY 1, 2, 3, 4 ORDER BY n DESC, ra DESC LIMIT {int(top)}""",
         params,
     ).fetchall()
@@ -254,10 +272,12 @@ def drops(con, fielder: int | None = None, bowler: int | None = None, team: str 
     if not rows:
         ev.gap = f"No audited dropped catches match that {_scope(seasons)}."
         return ev
-    for fid, fn, bid, bn, n, ra in rows:
-        ev.add(f"{fn} dropped {_n(n, 'catch')} off {bn}'s bowling {_scope(seasons)}; the batters added {ra} runs after",
-               dict(fielder=fn, bowler=bn, drops=n, runs_after=ra))  # fmt: skip
-        ev.node(fid, fn, "fielder")
+    _tie(ev, [f"{r[1]} off {r[3]}" for r in rows], [r[4] for r in rows], "drops")
+    for fid, fn, bid, bn, n, ra, kept in rows:
+        wk = " (wicketkeeper)" if kept else ""
+        ev.add(f"{fn}{wk} dropped {_n(n, 'catch')} off {bn}'s bowling {_scope(seasons)}; the batters added {ra} runs after",
+               dict(fielder=fn, bowler=bn, drops=n, runs_after=ra, keeper=bool(kept)))  # fmt: skip
+        ev.node(fid, fn, "fielder", keeper=bool(kept))
         ev.node(bid, bn, "bowler")
         ev.edges.append({"source": fid, "target": bid, "kind": "dropped_off", "drops": n, "runs_after": ra})
     return ev
@@ -297,8 +317,9 @@ def connection(con, a: int, b: int) -> Evidence:
     if a not in g or b not in g:
         ev.gap = f"{an if a not in g else bn} has no teammate links in the archive."
         return ev
-    try:
-        path = nx.shortest_path(g, a, b)
+    try:  # of the shortest chains, the strongest (most seasons together), so the answer does not depend on row order
+        paths = list(itertools.islice(nx.all_shortest_paths(g, a, b), 2000))
+        path = max(paths, key=lambda p: (sum(g[x][y]["weight"] for x, y in itertools.pairwise(p)), [-n for n in p]))
     except nx.NetworkXNoPath:
         ev.gap = f"No chain of teammates links {an} and {bn}."
         return ev
@@ -326,13 +347,26 @@ def connection(con, a: int, b: int) -> Evidence:
 
 
 def ranking(con, kind: str = "bowler", seasons=None, top: int = 10) -> Evidence:
-    fn = gx.bowler_rank if kind == "bowler" else gx.batter_rank
-    rows = fn(con, seasons, top=top)
-    what = "wickets" if kind == "bowler" else "runs"
-    ev = Evidence("ranking", title=f"Network rank of {kind}s (PageRank heuristic, not an official stat)")
-    for i, (name, score, n) in enumerate(rows, 1):
-        ev.add(f"#{i} {name}: network score {score} ({n} {what} {_scope(seasons)})",
-               dict(rank=i, player=name, score=score, **{what: n}))  # fmt: skip
+    """Quality wickets (bowlers) or quality runs (batters): one stated weight, not a black-box score."""
+    rows = (gx.bowler_rank if kind == "bowler" else gx.batter_rank)(con, seasons, top=top)
+    least = gx.qualify(seasons, None)
+    what = "quality wickets" if kind == "bowler" else "quality runs"
+    how = (
+        "each wicket weighted by the batter's average in the same seasons (a wicket of a batter averaging 40 counts twice one averaging 20)"
+        if kind == "bowler"
+        else "runs weighted by how hard each bowler was to score off per wicket, against the league"
+    )
+    ev = Evidence("ranking", title=f"{kind.title()}s by {what} {_scope(seasons)}, min {least} balls")
+    if rows:
+        ev.add(f"{kind.title()}s ranked by {what} {_scope(seasons)}, minimum {least} balls: {how}")
+    for i, r in enumerate(rows, 1):
+        if kind == "bowler":
+            ev.add(f"#{i} {r['player']}: {r['score']} quality wickets from {_n(r['wickets'], 'wicket')} "
+                   f"({r['top order']} top order, {r['middle order']} middle order, {r['tail']} tail)",
+                   dict(rank=i, **r))  # fmt: skip
+        else:
+            ev.add(f"#{i} {r['player']}: {r['score']} quality runs from {r['runs']} runs off {r['balls']} balls",
+                   dict(rank=i, **r))  # fmt: skip
     if not rows:
-        ev.gap = f"Not enough {kind} data {_scope(seasons)} for a network ranking."
+        ev.gap = f"Not enough {kind} data {_scope(seasons)} for a ranking."
     return ev

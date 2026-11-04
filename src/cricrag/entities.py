@@ -235,6 +235,7 @@ COMMON_WORDS = {
     "tell",
     "show",
     "moment",
+    "while",  # "the most while he batted" was typo-corrected to Cameron White
 }
 
 YEAR = re.compile(r"\b(20(?:0[89]|1\d|2\d))\b")

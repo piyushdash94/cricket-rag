@@ -112,4 +112,36 @@ def test_api(graph_db):
     f = c.get("/api/graph/fielding", params={"team": "CSK"}).json()
     assert f["catches"]["rows"][0]["fielder"] == "MS Dhoni"
     assert c.get("/api/graph/rankings", params={"kind": "nope"}).status_code == 400
-    assert c.get("/api/graph/communities").status_code == 200
+    assert c.get("/api/graph/communities").status_code == 404  # replaced by dismissal profiles
+    d = c.get("/api/graph/dismissals/12").json()  # Dhoni: out caught off Krunal Pandya's bowling
+    assert d["batter"]["total"] == 1 and d["batter"]["groups"][0]["modes"] == {"caught": 1}
+    r = c.get("/api/graph/rankings", params={"kind": "bowler"}).json()
+    assert "Quality wickets" in r["note"] and r["rows"] == []  # nobody bowled 300 balls in the fixture
+
+
+@pytest.mark.parametrize(
+    "q",
+    [
+        "What partnership did Rohit Sharma and Hardik Pandya put on against CSK?",
+        "Where did the final turn for Rohit Sharma vs MS Dhoni?",
+    ],
+)
+def test_pandit_first_cues(q):
+    assert route(q, 2, 1) == ("pandit", "pandit_first_cue")
+
+
+def test_teammates_with_no_balls_between_them_go_to_pandit(graph_db, cat):
+    agent = PanditGraph(cat, graph_db, None, pandit_factory=FakePandit)
+    ans = agent.ask("Rohit Sharma against Hardik Pandya")  # both MI batters: no matchup
+    assert ans.text == "stats answer"
+    assert any(s.get("rule") == "no_balls_between_players" for s in ans.trace)
+
+
+def test_validator_reads_number_words_and_llm_punctuation():
+    from cricrag.agent.graph_agent import clean
+
+    lines = ["A Bowler dismissed B Batter 7 times [G1]"]
+    assert validate(clean("A Bowler got B Batter seven times 【G1】."), lines, "q") == []
+    assert validate("A Bowler got B Batter six times [G1].", lines, "q") == ["numbers not in evidence: ['6']"]
+    assert validate("", lines, "q") == ["empty reply"]
+    assert validate("Mumbai Indians: A Bowler 7 [G1].", lines, "q") == []

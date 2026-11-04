@@ -37,13 +37,20 @@ DROP = re.compile(r"\b(drop(s|ped|ping)?|put down|spilled|grassed)\b", re.I)
 NEMESIS = re.compile(r"\b(nemesis|nemeses|trouble[sd]?|kryptonite|struggle[sd]?|got (him|\w+) out most|dismiss(ed|es)? \w+ (the )?most|most dismissals of|owns?|bogey)\b", re.I)  # fmt: skip
 BUNNY = re.compile(r"\b(bunny|bunnies|victims?|favou?rite (victim|wicket)|whom did|who did \w+ dismiss|dismissed most by)\b", re.I)  # fmt: skip
 H2H = re.compile(r"\b(vs\.?|versus|against|head[- ]to[- ]head|h2h|match-?up|record (against|vs)|faced?|face-?off|battle|rivalry)\b", re.I)  # fmt: skip
-RANK = re.compile(r"\b(page ?rank|network (rank|score)|centrality|most influential|graph rank)\b", re.I)
+RANK = re.compile(
+    r"\b(page ?rank|network (rank|score)|centrality|most influential|graph rank|quality (wickets|runs))\b",
+    re.I,
+)
+# Pandit already answers these well: batting partnerships, scorecards, and match moments.
+PANDIT_FIRST = re.compile(r"\b(partnerships?|stand|put on|added together|scorecard|turn(ed|ing)?|final|how was \w+ out|batting together)\b", re.I)  # fmt: skip
 PAIR_WORDS = re.compile(r"\b(pairs?|partners?|combination|combo|c ?& ?b|duo)\b", re.I)
 
 
 def route(question: str, n_players: int, n_teams: int) -> tuple[str, str]:
     """(program, rule). 'pandit' means: not a relational question."""
     q = question
+    if PANDIT_FIRST.search(q) and not TEAMMATE.search(q) and not RANK.search(q):
+        return "pandit", "pandit_first_cue"
     if n_players >= 2:
         if TEAMMATE.search(q):
             return "connection", "two_players_teammate_cue"
@@ -80,16 +87,36 @@ def route(question: str, n_players: int, n_teams: int) -> tuple[str, str]:
 WRITER = """You are Pandit, an IPL analyst. Answer the question using only the EVIDENCE lines.
 - Lead with the direct answer. Name the players. At most 4 sentences, plain prose.
 - End every sentence that states a fact with its evidence tag(s) exactly as written, e.g. [G1] or [G1][G2].
-- Use only the numbers shown; never add, subtract, average or derive new ones.
-- If a line says "network score" or "PageRank heuristic", call it a network ranking, not an official stat.
+- Use only the numbers shown, written as digits; never add, subtract, average or derive new ones.
+- If a line starts "Tied for the most", name every tied player and say they are tied; never crown one of them.
+- For quality wickets or quality runs, say once how they are weighted, in the evidence's words.
 - If the evidence does not answer the question, say exactly what is missing."""
 
 GTAG = re.compile(r"\[(G\d+)\]")
 NAME = re.compile(r"\b[A-Z][a-zA-Z'-]+(?: (?:de |du |van |ul )?[A-Z][a-zA-Z'-]+)+\b")
 
 
+WORDS = {w: i for i, w in enumerate(
+    ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty"])} | {"once": 1, "twice": 2, "thrice": 3, "thirty": 30, "forty": 40, "fifty": 50}  # fmt: skip
+WORD_NUM = re.compile(rf"\b({'|'.join(WORDS)})\b", re.I)
+TEAM_FULL = {"Chennai Super Kings", "Mumbai Indians", "Royal Challengers Bengaluru", "Royal Challengers Bangalore",
+             "Kolkata Knight Riders", "Sunrisers Hyderabad", "Deccan Chargers", "Punjab Kings", "Kings XI Punjab",
+             "Rajasthan Royals", "Delhi Capitals", "Delhi Daredevils", "Gujarat Titans", "Gujarat Lions",
+             "Lucknow Super Giants", "Pune Warriors", "Rising Pune Supergiant", "Kochi Tuskers Kerala"}  # fmt: skip
+
+
+def clean(text: str) -> str:
+    """LLMs write 【G1】, [ G1 ], narrow no-break spaces and curly quotes: map them to plain text."""
+    text = text.replace("【", "[").replace("】", "]").replace("\u202f", " ").replace("\u00a0", " ")
+    text = text.replace("\u2011", "-").replace("\u2019", "'").replace("\u2018", "'")
+    return re.sub(r"\[\s*(G\d+)\s*\]", r"[\1]", text).strip()
+
+
 def validate(reply: str, lines: list[str], question: str) -> list[str]:
+    """Citations exist, every number (digits or words like 'seven') is in the evidence, names are in it too."""
     problems = []
+    if not reply.strip():
+        return ["empty reply"]
     tags = {t for line in lines for t in GTAG.findall(line)}
     allowed_nums = numbers(" ".join(lines)) | numbers(question)
     evidence_text = " ".join(lines) + " " + question
@@ -99,13 +126,14 @@ def validate(reply: str, lines: list[str], question: str) -> list[str]:
         cites = set(GTAG.findall(sent))
         if cites - tags:
             problems.append(f"unknown citation {sorted(cites - tags)}")
-        if numbers(GTAG.sub("", sent)) and not cites:
+        if (numbers(GTAG.sub("", sent)) or WORD_NUM.search(sent)) and not cites:
             problems.append(f"uncited numbers: {sent[:60]}")
-    extra = numbers(GTAG.sub("", reply)) - allowed_nums
+    said = numbers(GTAG.sub("", reply)) | {str(WORDS[w.lower()]) for w in WORD_NUM.findall(reply)}
+    extra = said - allowed_nums
     if extra:
         problems.append(f"numbers not in evidence: {sorted(extra)}")
     for name in NAME.findall(GTAG.sub("", reply)):
-        if name not in evidence_text and name.split()[-1] not in evidence_text:
+        if name not in evidence_text and name.split()[-1] not in evidence_text and name not in TEAM_FULL:
             problems.append(f"name not in evidence: {name}")
     return problems
 
@@ -202,8 +230,18 @@ class PanditGraph:
             program, rule = route(s["question"], len(f.players), len(f.teams))
         if program not in ("pandit", "clarify") and not self.graph_db.is_file():
             program, rule = "clarify", "graph_not_built"
+        elif program == "head_to_head" and not self._has_matchup(f.players[:2]):
+            program, rule = "pandit", "no_balls_between_players"  # two team-mates, not a matchup
         self.trace.append({"step": "relational_route", "rule": rule, "program": program})
         return {"program": program, "rule": rule}
+
+    def _has_matchup(self, names: list[str]) -> bool:
+        ids = [gt.player_id(self.con, n) for n in names]
+        if None in ids or len(ids) < 2:
+            return True  # let the tool report the gap
+        a, b = ids
+        q = "SELECT coalesce(sum(balls), 0) FROM bowled_to WHERE (bowler_id = ? AND batter_id = ?) OR (bowler_id = ? AND batter_id = ?)"
+        return self._one(q, [a, b, b, a]) > 0
 
     def _clarify(self, s: Any) -> dict[str, Any]:
         text = "The relational graph isn't built yet. Run `uv run cricrag build-graph`, then ask again."
@@ -272,8 +310,8 @@ class PanditGraph:
     def _write(self, s: Any) -> dict[str, Any]:
         ev: gt.Evidence = s["evidence"]
         src = Sources()
-        for i, row in enumerate(ev.rows, 1):
-            src.stats[f"G{i}"] = {"question": ev.tool, "reply": ev.lines[i - 1], **row}
+        for i, line in enumerate(ev.lines, 1):  # tags follow lines (a tie line has no row of its own)
+            src.stats[f"G{i}"] = {"question": ev.tool, "reply": line}
         if ev.gap or not self.llm or not getattr(self.llm, "available", False):
             mode = "gap" if ev.gap else "extractive"
             return {"answer": self._answer(extractive(ev), "relational", s, src, mode=mode, ev=ev)}
@@ -290,7 +328,7 @@ class PanditGraph:
                 self.trace.append({"step": "llm_unavailable", "error": str(exc)[:160]})
                 break
             model = out.get("model")
-            text = (out["message"].get("content") or "").strip()
+            text = clean(out["message"].get("content") or "")
             problems = validate(text, ev.lines, s["question"])
             self.trace.append({"step": "validate", "attempt": attempt + 1, "problems": problems})
             if not problems:

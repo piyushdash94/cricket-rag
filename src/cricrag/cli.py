@@ -86,6 +86,17 @@ def build_events():
     console.print(f"[green]{n} events in {time.time() - t:.0f}s")
 
 
+@app.command("fill-styles")
+def fill_styles():
+    """Give every player a batting hand and a bowling type (pace, spin, or none) in the archive's player_styles."""
+    from cricrag.styles import fill
+
+    report = fill(settings().db_path)
+    console.print(report)
+    if report["no_batting_hand"] or report["no_bowling_type"]:
+        raise typer.Exit(1)
+
+
 @app.command("build-graph")
 def build_graph():
     """Build data/graph.duckdb: canonical player ids, then player-to-player edge tables, with parity checks."""
@@ -129,7 +140,7 @@ def graph_explore(
     season: Annotated[list[str] | None, typer.Option(help="limit to archive seasons, e.g. 2024")] = None,
     top: int = 10,
 ):
-    """NetworkX views over the graph: bowler/batter PageRank, fielder-bowler pairs, teammate communities."""
+    """Views over the graph: bowlers by quality wickets, batters by quality runs, fielder-bowler pairs."""
     import duckdb
 
     from cricrag.graph import explore as gx
@@ -145,16 +156,13 @@ def graph_explore(
                 console.print(f"  {row}")
             return
         for title, rows in (
-            ("bowler PageRank (x1000, wickets)", gx.bowler_rank(con, season or None, top=top)),
-            ("batter PageRank (x1000, runs)", gx.batter_rank(con, season or None, top=top)),
+            ("bowlers by quality wickets", gx.bowler_rank(con, season or None, top=top)),
+            ("batters by quality runs", gx.batter_rank(con, season or None, top=top)),
             ("fielder-bowler pairs (c/st X b Y)", gx.fielder_bowler(con, season or None, top=top)),
         ):
             console.print(f"[bold]{title}[/]")
             for r in rows:
                 console.print(f"  {r}")
-        console.print("[bold]teammate communities (top 8 names each)[/]")
-        for c in gx.communities(con, season or None)[:6]:
-            console.print(f"  {len(c):3} players: {', '.join(c[:8])}")
 
 
 def pandit():

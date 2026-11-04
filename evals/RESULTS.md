@@ -104,3 +104,35 @@ detector (bursts and squeezes never fired before). Four matches have no winner-f
 
 `routing_labels.jsonl`: 135 questions with the intent form and acceptable programs. Drafted by an AI;
 rows count as gold only once `verified` is set to true by a person.
+
+## Relational graph and PanditGraph (2026-11-03, real archive, real Groq)
+
+**Relational writer** (`scripts/eval/relational_llm.py`): 14 relational questions, gold from SQL run directly
+on `balls` / `cs_fielding` (not the graph tables). gpt-oss-120b writer, validator on.
+
+| | Result |
+|---|---|
+| Correct (gold names / numbers present) | **14/14** |
+| Written by the LLM (validator passed) | 14/14 (0 fell back to evidence) |
+
+Fixes the first real run forced: number words ("seven") now count as numbers; 【G1】 and narrow no-break spaces
+are cleaned; empty replies are rejected; ties are stated in the evidence and must be named (Warner for SRH:
+Harbhajan, Rabada and Umesh Yadav all on 3).
+
+**No regression vs Pandit** (`scripts/eval/ab_regression.py`): 125 saved questions with gold (fresh40 ×2,
+fresh20, fresh20b, forum20, events). Old Pandit (A) and PanditGraph (B) on the same archive, the same LanceDB
+index (checksum-matched to the local one) and the same models; B runs second and re-uses A's cached LLM calls.
+
+| | Result |
+|---|---|
+| Routed to Pandit unchanged | 124/125 |
+| Routed to the relational branch | 1 (fresh20b C4, Chawla dismissing Rayudu: correct, 6) |
+| Identical reply on first pass | 120/124 delegated |
+| Identical after re-running the 4 that differed | 124/124 |
+| Gold score A → B (each set's own gold, `all_groups`) | 58/120 → 60/120; no question went from right to wrong |
+
+The 4 first-pass differences were live LLM calls that came out differently (one fell back from gpt-oss-120b to
+gpt-oss-20b on a rate limit), not routing: with the same LLM responses A and B answer identically.
+Routing all 175 saved questions found one misroute before this run (a batting partnership read as a matchup);
+`pandit_first_cue` and `no_balls_between_players` now keep those with Pandit. Absolute scores are not
+comparable with the per-set scripts above, which use their own scorers.

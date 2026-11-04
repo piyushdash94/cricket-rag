@@ -28,6 +28,7 @@ from cricrag.agent.validate import Sources, check, cited, normalise
 from cricrag.entities import Catalog, link_players
 from cricrag.frame import PRONOUN, build_frame, find_matches
 from cricrag.retrieval.hybrid import Filters, Retriever
+from cricrag.text import snippet
 
 STORY = re.compile(
     r"\b(turn(ed|ing)?|recap|summar\w*|story|key moments?|momentum|how did .+ (win|lose|lost)|"
@@ -99,6 +100,14 @@ STYLE = re.compile(
     re.I,
 )
 
+# "how does Rohit bat against left-arm spin": a player against a bowler or batter type is a stats matchup,
+# not a story (it once went to commentary search and quoted overs from pacers).
+TYPE_VS = re.compile(
+    r"\b(?:against|vs?\.?|versus)\s+(?:the\s+)?(?:(?:left|right)[- ]arm\s+)?"
+    r"(?:spin\w*|pace\w*|seam\w*|fast\w*|quick\w*|medium\w*|slow\w*|left[- ]hand\w*|right[- ]hand\w*|"
+    r"lefties|left[- ]arm\w*|right[- ]arm\w*|wrist[- ]?spin\w*|leg[- ]?spin\w*|off[- ]?spin\w*)",
+    re.I,
+)
 
 EVENT_OF = {"partnership": "partnership", "hat_tricks": "hattrick", "hundreds": "hundred", "fifties": "fifty",
             "wickets": "wicket", "dismissals": "wicket", "drops": "drop", "maidens": "maiden",
@@ -118,6 +127,12 @@ WRITER = """You are Pandit, an IPL analyst. Answer the question using only the E
 - A VERIFIED ANSWER line is correct: restate its names and numbers first, then add detail only if asked.
 - If a table title states a minimum (e.g. "min 60 balls"), say it with the answer.
 - If the evidence does not answer the question, say exactly what is missing."""
+
+
+def _display(line: str) -> str:
+    """An evidence line as shown when the writer is unavailable: the commentary part as a plain snippet."""
+    m = re.match(r"(.*?BODY: )(.*?)(\s*\[C\d+\])?$", line, re.S) or re.match(r"(C\d+: )(.*?)()$", line, re.S)
+    return f"{m.group(1).replace('BODY: ', '')}{snippet(m.group(2))}{m.group(3) or ''}" if m else line
 
 
 class Trace(list):
@@ -359,6 +374,9 @@ class Pandit:
         if moments and ev.DESC.search(question) and not one and order[0] != "event":
             order = ["event", *[p for p in order if p != "event"]]  # "costliest drops": rank single moments
             trace.append({"step": "route", "rule": "moment_ranking_to_events"})
+        if frame.players and TYPE_VS.search(question) and order[:2] != ["stats", "finder"]:
+            order = ["stats", "finder", *[p for p in order if p not in ("stats", "finder")]]
+            trace.append({"step": "route", "rule": "player_v_bowling_type_to_stats"})  # a matchup is numbers
         trace.append({"step": "intent", **it.as_dict(), "routes": order})
         prior, gap_reply, missed = None, None, False
         for prog in order:
@@ -498,7 +516,8 @@ class Pandit:
             return prior or self._done(text, "gap", frame, src, trace, t0, mode="gap")
         src.stats["S1"] = {"question": question, "reply": finder.evidence(res)}
         ans = self._write(question, "finder", [f"{src.stats['S1']['reply']} [S1]"], frame, src, trace, t0)
-        ans.text += "\n\n(Computed by a generated query over the archive; the SQL is in the trace.)"
+        sample = finder.footnote(question, res)  # in code: the writer may drop the sample or the filter
+        ans.text += f"\n\n({sample + ' ' if sample else ''}Computed by a generated query over the archive; the SQL is in the trace.)"
         return ans
 
     def _event(self, frame, types: list[str], src: Sources) -> list[str]:
@@ -614,8 +633,10 @@ class Pandit:
                 "I couldn't find that in the IPL archive.", program, frame, src, trace, t0, mode="empty"
             )
         keep = lines[:2] if program == "story" else lines[:8]  # story: the facts sheet and the decisive shift
-        extractive = "\n".join(
-            re.sub(r"^(HEADER: |Commentary )", "", ln).replace("DECISIVE SHIFT: ", "Turning point: ")
+        extractive = "\n".join(  # shown to people: commentary parts become short plain-text snippets
+            _display(
+                re.sub(r"^(HEADER: |Commentary )", "", ln).replace("DECISIVE SHIFT: ", "Turning point: ")
+            )
             for ln in keep
         )
         if not self.llm.available:

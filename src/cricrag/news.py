@@ -34,8 +34,28 @@ KINDS = {
     ),
 }
 
-# Checked by hand on 30 Oct 2026 (search-indexed ESPNcricinfo / ESPN stories). Titles as published.
+# Checked by hand on 30 Oct and 4 Nov 2026 (each page opened; titles as published, original publishers only).
+# Dated news (deadlines, schedules) is left to the live feed: a 26 Oct report of a 15 Nov retention deadline was
+# superseded on 2 Nov (moved to 17 Nov), and a hand-kept list cannot follow that.
 READING: list[dict[str, Any]] = [
+    {
+        "kind": "news",
+        "year": 2026,
+        "title": "TATA IPL 2026, Final: RCB v GT – Match Report",
+        "url": "https://www.iplt20.com/news/4377/tata-ipl-2026-final-rcb-v-gt-match-report",
+    },
+    {
+        "kind": "trends",
+        "year": 2026,
+        "title": "Flying fifties, sixy powerplays, and routine 200s - IPL 2026 a run-fest already",
+        "url": "https://africa.espn.com/cricket/story/_/id/48474161/ipl-2026-run-fest-already-flying-fifties-sixy-powerplays-routine-200s",
+    },
+    {
+        "kind": "trends",
+        "year": 2026,
+        "title": "IPL 2026 sets new benchmark: 200-plus totals no longer safe",
+        "url": "https://thedailystar.net/sports/cricket/news/ipl-2026-sets-new-benchmark-200-plus-totals-no-longer-safe-4169746",
+    },
     {
         "kind": "rules",
         "year": 2023,
@@ -115,8 +135,12 @@ def kind_of(text: str) -> str:
     return next((k for k, rx in KINDS.items() if rx.search(text)), "news")
 
 
+SOURCES = {"espncricinfo.com": "ESPNcricinfo", "espn.": "ESPNcricinfo", "iplt20.com": "IPLT20",
+           "thedailystar.net": "The Daily Star"}  # fmt: skip
+
+
 def _source(url: str) -> str:
-    return "ESPNcricinfo" if "espncricinfo.com" in url else "ESPN"
+    return next((name for host, name in SOURCES.items() if host in url), "ESPN")
 
 
 def parse_feed(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -166,5 +190,5 @@ def articles(cache: Path | None = None, fetch=None) -> dict[str, Any]:
     return {
         "live": live(cache, fetch),
         "reading": [{**r, "source": _source(r["url"])} for r in READING],
-        "kinds": ["rules", "trends", "records"],
+        "kinds": ["news", "rules", "trends", "records"],
     }

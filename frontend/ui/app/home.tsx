@@ -4,8 +4,9 @@
 // as a chart you can click to change season, and a reading room for IPL articles. All numbers come from
 // /api/home, which is plain SQL on the archive.
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
+import { SeasonNetwork } from "./network";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -45,9 +46,9 @@ const teamName = (code: string | undefined, year: number) => (code && TEAMS[code
 const num = (value?: number) => (value ?? 0).toLocaleString("en-IN");
 const day = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 
-export function FrontPage({ season, onSeason, onOpen, onAsk, onChat, news, hall }: {
+export function FrontPage({ season, onSeason, onOpen, onAsk, onChat, onNetwork, onNews, news, hall }: {
   season: number; onSeason: (year: number) => void; onOpen: (ref: Ref) => void; onAsk: (question: string) => void;
-  onChat: () => void; news: News | null; hall: ReactNode;
+  onChat: () => void; onNetwork?: () => void; onNews?: () => void; news: News | null; hall: ReactNode;
 }) {
   const [data, setData] = useState<HomeData | null>(null);
   const [failed, setFailed] = useState(false);
@@ -66,6 +67,7 @@ export function FrontPage({ season, onSeason, onOpen, onAsk, onChat, news, hall 
   const runnerUp = page?.final?.teams.find((team) => team !== champion);
 
   return <div className="fp" style={{ "--champion": teamColor(champion) } as CSSProperties}>
+    <NewsTicker news={news} season={season} onOpen={onNews} />
     <header className="fp-hero">
       <div className="fp-hero-top">
         <div className="fp-year" aria-label={`IPL ${season}`}><span>IPL</span><strong>{season}</strong></div>
@@ -104,6 +106,8 @@ export function FrontPage({ season, onSeason, onOpen, onAsk, onChat, news, hall 
         <Cap tone="six" label="Most sixes" leader={page.most_sixes} unit="sixes" />
       </section>
 
+      {onNetwork && <SeasonNetwork season={season} onOpen={onNetwork} />}
+
       {(page.thrillers?.length ?? 0) > 0 && <section className="fp-section">
         <div className="fp-head"><h3>Closest finishes</h3><p>Ties, wins by five runs or fewer, and chases won with one ball or none to spare.</p></div>
         <ol className="fp-thrillers">{page.thrillers?.map((match) => <li key={match.match_id}>
@@ -116,7 +120,7 @@ export function FrontPage({ season, onSeason, onOpen, onAsk, onChat, news, hall 
       </section>}
     </>}
 
-    <ReadingRoom news={news} />
+    <ReadingRoom news={news} season={season} />
     <section className="fp-hall-mobile" aria-label="All-time lists">{hall}</section>
   </div>;
 }
@@ -176,12 +180,83 @@ function EraChart({ eras, season, onSeason }: { eras: Era[]; season: number; onS
 
 const KIND_LABELS: Record<string, string> = { all: "Everything", rules: "Rule changes", trends: "Trends", records: "Records", news: "News" };
 
-function ReadingRoom({ news }: { news: News | null }) {
+/** Live ESPN stories first, then the selected season's pieces, then the rest newest first. */
+function ordered(news: News, season: number): Article[] {
+  const year = (a: Article) => a.year ?? (a.published ? Number(a.published.slice(0, 4)) : 0);
+  const rest = [...news.reading].sort((a, b) => Number(year(b) === season) - Number(year(a) === season) || year(b) - year(a));
+  return [...news.live, ...rest];
+}
+
+/** A scrolling strip of headlines, each a link to the article. Pauses on hover, on focus, or with its button. */
+function NewsTicker({ news, season, onOpen }: { news: News | null; season: number; onOpen?: () => void }) {
+  const [paused, setPaused] = useState(false);
+  const items = useMemo(() => (news ? ordered(news, season) : []), [news, season]);
+  if (!items.length) return null;
+  const strip = (copy: boolean) => items.map((item) => <a key={`${copy}-${item.url}`} href={item.url} target="_blank" rel="noopener noreferrer"
+    className={`kind-${item.kind}`} tabIndex={copy ? -1 : 0} aria-hidden={copy || undefined}>
+    <b>{item.published ? "New" : KIND_LABELS[item.kind] ?? item.kind}</b>{item.title}<span aria-hidden="true">↗</span></a>);
+  return <section className={`fp-news${paused ? " paused" : ""}`} aria-label="IPL headlines">
+    {onOpen ? <button className="fp-news-label" onClick={onOpen} aria-label="Open all IPL stories"><i aria-hidden="true" />Headlines</button>
+      : <span className="fp-news-label"><i aria-hidden="true" />Headlines</span>}
+    <div className="fp-news-window">
+      <div className="fp-news-track" style={{ "--ticker-s": `${Math.max(30, items.length * 7)}s` } as CSSProperties}>{strip(false)}{strip(true)}</div>
+    </div>
+    <button className="fp-news-toggle" onClick={() => setPaused((p) => !p)} aria-pressed={paused} aria-label={paused ? "Play headlines" : "Pause headlines"}>{paused ? "▶" : "❚❚"}</button>
+    {onOpen ? <button className="fp-news-all" onClick={onOpen}>All stories</button> : <a className="fp-news-all" href="#reading-room">All stories ↓</a>}
+  </section>;
+}
+
+/** Every story, one card at a time on a phone and three on a desktop: arrows, keys and swipe move it. */
+export function NewsCarousel({ news, season, open, onClose }: { news: News | null; season: number; open: boolean; onClose: () => void }) {
+  const [kind, setKind] = useState("all");
+  const [at, setAt] = useState(0);
+  const track = useRef<HTMLOListElement>(null);
+  const items = useMemo(() => (news ? ordered(news, season) : []).filter((item) => kind === "all" || item.kind === kind), [news, season, kind]);
+  const go = useCallback((i: number) => {
+    const el = track.current?.children[Math.max(0, Math.min(i, items.length - 1))] as HTMLElement | undefined;
+    el?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "start" });
+  }, [items.length]);
+  useEffect(() => { track.current?.scrollTo({ left: 0 }); }, [kind, open]); // the scroll event resets the counter
+  useEffect(() => {
+    if (!open) return;
+    const key = (e: KeyboardEvent) => { if (e.key === "ArrowRight") go(at + 1); else if (e.key === "ArrowLeft") go(at - 1); };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [open, at, go]);
+  const onScroll = () => {
+    const el = track.current; const first = el?.children[0] as HTMLElement | undefined;
+    if (el && first) setAt(Math.round(el.scrollLeft / (first.offsetWidth + 12)));
+  };
+  if (!news) return null;
+  return <div className={`news-overlay${open ? " open" : ""}`} role="dialog" aria-modal="true" aria-label="IPL news" aria-hidden={!open} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="news-sheet">
+      <header>
+        <div><p className="section-kicker">IPL NEWS</p><strong>{items.length} {items.length === 1 ? "story" : "stories"}</strong><small>Live ESPN stories first, then IPL {season}, then the newest. Links open the publisher.</small></div>
+        <button onClick={onClose} aria-label="Close news">×</button>
+      </header>
+      <div className="fp-pills" role="tablist" aria-label="Story type">{["all", ...news.kinds].map((name) => <button key={name} role="tab" aria-selected={kind === name} className={kind === name ? "active" : ""} onClick={() => setKind(name)}>{KIND_LABELS[name] ?? name}</button>)}</div>
+      <div className="news-stage">
+        <button className="news-arrow prev" onClick={() => go(at - 1)} disabled={at <= 0} aria-label="Previous story">‹</button>
+        <ol className="news-track" ref={track} onScroll={onScroll} tabIndex={open ? 0 : -1}>{items.map((item, i) => <li key={item.url} className={`news-card kind-${item.kind}`}>
+          <span className="fp-kind">{item.published ? "New" : KIND_LABELS[item.kind] ?? item.kind}</span>
+          <strong>{item.title}</strong>
+          <small>{item.source}{item.year ? ` · IPL ${item.year}` : item.published ? ` · ${day(item.published.slice(0, 10))}` : ""}</small>
+          <a href={item.url} target="_blank" rel="noopener noreferrer" tabIndex={open ? 0 : -1}>Read on {item.source} <span aria-hidden="true">↗</span></a>
+          <i className="news-count" aria-hidden="true">{i + 1} / {items.length}</i>
+        </li>)}</ol>
+        <button className="news-arrow next" onClick={() => go(at + 1)} disabled={at >= items.length - 1} aria-label="Next story">›</button>
+      </div>
+      <div className="news-dots" aria-hidden="true">{items.map((item, i) => <i key={item.url} className={i === at ? "on" : ""} />)}</div>
+    </div>
+  </div>;
+}
+
+function ReadingRoom({ news, season }: { news: News | null; season: number }) {
   const [kind, setKind] = useState("all");
   if (!news) return null;
-  const items = [...news.live, ...news.reading].filter((item) => kind === "all" || item.kind === kind);
-  return <section className="fp-section fp-reading" aria-label="Reading room">
-    <div className="fp-head"><h3>Reading room</h3><p>Rule changes, trends and records from ESPNcricinfo, with new IPL stories from ESPN&apos;s feed first.</p></div>
+  const items = ordered(news, season).filter((item) => kind === "all" || item.kind === kind);
+  return <section className="fp-section fp-reading" id="reading-room" aria-label="Reading room">
+    <div className="fp-head"><h3>Reading room</h3><p>New IPL stories from ESPN&apos;s feed first, then pieces on IPL {season}, then rule changes, trends and records, newest first.</p></div>
     <div className="fp-pills" role="tablist" aria-label="Article type">{["all", ...news.kinds].map((name) => <button key={name} role="tab" aria-selected={kind === name} className={kind === name ? "active" : ""} onClick={() => setKind(name)}>{KIND_LABELS[name] ?? name}</button>)}</div>
     <ul className="fp-articles">{items.map((item) => <li key={item.url} className={`kind-${item.kind}`}>
       <a href={item.url} target="_blank" rel="noopener noreferrer">
