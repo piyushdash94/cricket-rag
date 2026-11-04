@@ -237,6 +237,8 @@ def footnote(question: str, res: dict[str, Any]) -> str:
         out.append(f"Bowlers: {spin.strip('()').replace(chr(39), '')}.")
     elif kind := f.get("bowl_kind"):
         out.append(f"Bowlers: {f['bowl_arm'] + '-arm ' if f.get('bowl_arm') else ''}{kind}.")
+    elif arm := f.get("bowl_arm"):
+        out.append(f"Bowlers: {arm}-arm, pace and spin.")
     if hand := f.get("bat_hand"):
         out.append(f"Batters: {hand}-handed.")
     if (need := qualifier(question)) and any(BALLS_COL.search(c) for c in cols):

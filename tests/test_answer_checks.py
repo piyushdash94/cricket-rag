@@ -339,3 +339,12 @@ def test_planner_on_the_wrong_side_of_the_ball():
         is None
     )
     assert role_mismatch("most runs in 2016", [{"name": "batting_leaders", "args": {}}]) is None
+
+
+def test_footnote_names_an_arm_only_filter():
+    from cricrag.finder import footnote
+
+    res = {"sql": "select ... where b.batter='MS Dhoni' and b.bowl_arm='left' and m.venue ilike '%Chidambaram%'",
+           "cols": ["runs", "balls", "dismissals", "average"], "rows": [(489, 327, 10, 48.9)]}  # fmt: skip
+    q = "how much does Dhoni average against left arm bowlers at Chepauk?"
+    assert footnote(q, res) == "Sample: 489 runs, 327 balls, 10 dismissals. Bowlers: left-arm, pace and spin."
