@@ -99,6 +99,7 @@ WRITER = """You are Pandit, an IPL analyst. Answer the question using only the E
 - Use only the numbers shown, written as digits; never add, subtract, average or derive new ones.
 - If a line starts "Tied for the most", name every tied player and say they are tied; never crown one of them.
 - For quality wickets or quality runs, say once how they are weighted, in the evidence's words.
+- For grounds that play alike, list the "% alike" grounds in order with their %, then name the family; never mention "the evidence".
 - If the evidence does not answer the question, say exactly what is missing."""
 
 GTAG = re.compile(r"\[(G\d+)\]")
@@ -145,6 +146,23 @@ def validate(reply: str, lines: list[str], question: str) -> list[str]:
         if name not in evidence_text and name.split()[-1] not in evidence_text and name not in TEAM_FULL:
             problems.append(f"name not in evidence: {name}")
     return problems
+
+
+def cite_missing(reply: str, lines: list[str]) -> str:
+    """Attach a tag to an uncited sentence whose numbers all sit in one evidence line (the writer's commonest slip:
+    the right figure, no [G#]). Anything less certain is left for the validator to reject."""
+    out = []
+    for sent in re.split(r"(?<=[.!?])\s+", reply.strip()):
+        nums = numbers(GTAG.sub("", sent)) | {str(WORDS[w.lower()]) for w in WORD_NUM.findall(sent)}
+        if nums and not GTAG.search(sent):
+            hits = [ln for ln in lines if GTAG.search(ln) and nums <= numbers(ln)]
+            if hits:
+                tag = GTAG.search(hits[0]).group(0)
+                body = sent.rstrip()
+                end = body[-1] if body[-1:] in ".!?" else ""
+                sent = f"{body[: len(body) - len(end)]} {tag}{end}"
+        out.append(sent)
+    return " ".join(out)
 
 
 def extractive(ev: gt.Evidence) -> str:
@@ -376,7 +394,7 @@ class PanditGraph:
                 self.trace.append({"step": "llm_unavailable", "error": str(exc)[:160]})
                 break
             model = out.get("model")
-            text = clean(out["message"].get("content") or "")
+            text = cite_missing(clean(out["message"].get("content") or ""), ev.lines)
             problems = validate(text, ev.lines, s["question"])
             self.trace.append({"step": "validate", "attempt": attempt + 1, "problems": problems})
             if not problems:

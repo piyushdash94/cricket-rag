@@ -393,8 +393,8 @@ def venue_like(con, venue: str, seasons=None, top: int = 6) -> Evidence:
     fam = gv.family_of(con, venue, seasons)
     ev.node(0, gv.short(venue), "venue")
     ev.add(
-        f"{venue} ({me['matches']} matches {_venue_scope(seasons)}) is in the '{fam['name'] if fam else gv.trait_name(me['z'])}' "
-        f"family of grounds" + (f" with {', '.join(v for v in fam['venues'] if v != venue)}" if fam else ""),
+        f"{venue} ({me['matches']} matches {_venue_scope(seasons)}): the grounds that play most like it are below, "
+        f"most alike first; its family of grounds is '{fam['name'] if fam else gv.trait_name(me['z'])}'",
         dict(venue=venue, family=fam["name"] if fam else None),
     )
     against = []
@@ -406,8 +406,14 @@ def venue_like(con, venue: str, seasons=None, top: int = 6) -> Evidence:
         f"Against the IPL in the same seasons, {venue}: " + "; ".join(against),
         dict(venue=venue, **me["delta"]),
     )
+    fams = {x: f["name"] for f in gv.families(con, seasons) for x in f["venues"]}
     for i, (v, sim) in enumerate(gv.similar(con, venue, seasons, top), 1):
-        ev.add(f"{v} is {sim}% alike ({prof[v]['matches']} matches)", dict(venue=v, similarity=sim))
+        same = fams.get(v) == fams.get(venue)
+        where = "the same family" if same else f"the '{fams.get(v, 'unplaced')}' family"
+        ev.add(
+            f"{v} is {sim}% alike ({prof[v]['matches']} matches; in {where})",
+            dict(venue=v, similarity=sim, same_family=same),
+        )
         ev.node(i, gv.short(v), "venue")
         ev.edges.append({"source": 0, "target": i, "kind": "similar", "similarity": sim})
     return ev
