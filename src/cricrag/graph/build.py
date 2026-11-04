@@ -20,6 +20,7 @@ from pathlib import Path
 
 import duckdb
 
+from cricrag.graph import venues
 from cricrag.graph.identity import (
     INNINGS_SQL,
     build_people,
@@ -30,7 +31,7 @@ from cricrag.graph.identity import (
     resolve_fielding_csv,
     roster_sql,
 )
-from cricrag.styles import spin_type_sql
+from cricrag.styles import bowl_type_sql
 
 # canonical id: Cricinfo id, or the merged one for an unregistered Cricsheet id
 CANON = "coalesce((SELECT to_id FROM id_merge WHERE from_id = {0}), {0})"
@@ -80,21 +81,23 @@ EDGES = {
 
 
 # Each pair: (edge-table total, the same count taken straight from the archive). They must be equal.
-# Each wicket the bowler is credited with, by mode, bowling type (pace, or the spin type) and the batter's position
+# Each wicket the bowler is credited with, by mode, bowling type with the arm, the batter's hand and position
 # (1-3 top order, 4-7 middle, 8+ tail; 12 and 13 are impact substitutes). Run outs are the fielder's, not here.
 def wicket_detail_sql(styles: bool, positions: bool) -> str:
-    kind = f"CASE WHEN s.bowl_kind = 'pace' THEN 'pace' ELSE {spin_type_sql('s')} END" if styles else "NULL"
+    kind = bowl_type_sql("s") if styles else "NULL"
     return f"""CREATE OR REPLACE TABLE wicket_detail AS
     SELECT {CANON.format("b.bowler_id")} AS bowler_id, {CANON.format("b.player_out_id")} AS batter_id, b.season,
            b.bowl AS team, CASE lower(b.dismissal_type) WHEN 'leg before wicket' THEN 'lbw'
                                 ELSE lower(b.dismissal_type) END AS mode,
            coalesce({kind}, 'unknown') AS bowl_type,
            {"r.position" if positions else "NULL::INT"} AS position,
+           {"nullif(h.bat_hand, '')" if styles else "NULL"} AS bat_hand,
            CASE WHEN position <= 3 THEN 'top order' WHEN position <= 7 THEN 'middle order'
                 WHEN position IS NOT NULL THEN 'tail' END AS order_band,
            count(*) AS n
     FROM gb b
     {"LEFT JOIN cb.player_styles s ON s.player_id = b.bowler_id" if styles else ""}
+    {"LEFT JOIN cb.player_styles h ON h.player_id = b.player_out_id" if styles else ""}
     {"LEFT JOIN cb.ref_batting r ON r.match_id = b.match_id AND r.inning = b.inning AND r.player_id = b.player_out_id" if positions else ""}
     WHERE b.bowler_wicket AND b.bowler_id IS NOT NULL AND b.player_out_id IS NOT NULL
     GROUP BY ALL"""
@@ -166,6 +169,7 @@ def build(
         con.execute(
             wicket_detail_sql(has_table(con, "cb", "player_styles"), has_table(con, "cb", "ref_batting"))
         )
+        con.execute(venues.build_sql(CANON, has_table(con, "cb", "player_styles")))
         # who kept wicket: a player with a stumping for that team in that season (Cricsheet has no keeper flag)
         con.execute("""CREATE OR REPLACE TABLE keepers AS
             SELECT DISTINCT fielder_id AS player_id, team, season FROM fielding_dismissal
@@ -189,7 +193,7 @@ def build(
 
 def graph_checks(con) -> dict[str, tuple[int, int, bool]]:
     out = {}
-    for name, (edge_sql, base_sql) in CHECKS.items():
+    for name, (edge_sql, base_sql) in (CHECKS | venues.CHECKS).items():
         if "cs_fielding" in base_sql and not has_table(con, "cb", "cs_fielding"):
             continue
         a = int(con.execute(edge_sql).fetchone()[0] or 0)

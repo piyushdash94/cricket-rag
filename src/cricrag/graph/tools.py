@@ -14,6 +14,7 @@ from typing import Any
 import networkx as nx
 
 from cricrag.graph import explore as gx
+from cricrag.graph import venues as gv
 
 
 @dataclass
@@ -319,7 +320,9 @@ def connection(con, a: int, b: int) -> Evidence:
         return ev
     try:  # of the shortest chains, the strongest (most seasons together), so the answer does not depend on row order
         paths = list(itertools.islice(nx.all_shortest_paths(g, a, b), 2000))
-        path = max(paths, key=lambda p: (sum(g[x][y]["weight"] for x, y in itertools.pairwise(p)), [-n for n in p]))
+        path = max(
+            paths, key=lambda p: (sum(g[x][y]["weight"] for x, y in itertools.pairwise(p)), [-n for n in p])
+        )
     except nx.NetworkXNoPath:
         ev.gap = f"No chain of teammates links {an} and {bn}."
         return ev
@@ -352,9 +355,9 @@ def ranking(con, kind: str = "bowler", seasons=None, top: int = 10) -> Evidence:
     least = gx.qualify(seasons, None)
     what = "quality wickets" if kind == "bowler" else "quality runs"
     how = (
-        "each wicket weighted by the batter's average in the same seasons (a wicket of a batter averaging 40 counts twice one averaging 20)"
+        "each wicket weighted by the batter's average times strike rate in the same seasons, against the league's (a batter who scores more and faster counts more)"
         if kind == "bowler"
-        else "runs weighted by how hard each bowler was to score off per wicket, against the league"
+        else "runs weighted by the bowler's average times economy, against the league's (runs off a bowler who concedes little and takes wickets count more)"
     )
     ev = Evidence("ranking", title=f"{kind.title()}s by {what} {_scope(seasons)}, min {least} balls")
     if rows:
@@ -369,4 +372,119 @@ def ranking(con, kind: str = "bowler", seasons=None, top: int = 10) -> Evidence:
                    dict(rank=i, **r))  # fmt: skip
     if not rows:
         ev.gap = f"Not enough {kind} data {_scope(seasons)} for a ranking."
+    return ev
+
+
+# ------------------------------------------------------------------ grounds
+
+
+def _venue_scope(seasons) -> str:
+    return f"in {', '.join(seasons)}" if seasons else "across all IPL seasons"
+
+
+def venue_like(con, venue: str, seasons=None, top: int = 6) -> Evidence:
+    """The grounds that play most like this one (cosine of era-adjusted profiles), its family, and its profile."""
+    prof = gv.profiles(con, seasons)
+    ev = Evidence("venue_like", title=f"Grounds that play like {venue}")
+    if venue not in prof:
+        ev.gap = f"{venue} has fewer than {gv.MIN_MATCHES} IPL matches {_venue_scope(seasons)}: too few for a profile."
+        return ev
+    me = prof[venue]
+    fam = gv.family_of(con, venue, seasons)
+    ev.node(0, gv.short(venue), "venue")
+    ev.add(
+        f"{venue} ({me['matches']} matches {_venue_scope(seasons)}) is in the '{fam['name'] if fam else gv.trait_name(me['z'])}' "
+        f"family of grounds" + (f" with {', '.join(v for v in fam['venues'] if v != venue)}" if fam else ""),
+        dict(venue=venue, family=fam["name"] if fam else None),
+    )
+    against = []
+    for k, (label, unit, _) in gv.FEATURES.items():
+        d = me["delta"][k]
+        word = "points" if unit == "%" else unit
+        against.append(f"{label} {'+' if d >= 0 else ''}{round(d, 1)} {word}")
+    ev.add(
+        f"Against the IPL in the same seasons, {venue}: " + "; ".join(against),
+        dict(venue=venue, **me["delta"]),
+    )
+    for i, (v, sim) in enumerate(gv.similar(con, venue, seasons, top), 1):
+        ev.add(f"{v} is {sim}% alike ({prof[v]['matches']} matches)", dict(venue=v, similarity=sim))
+        ev.node(i, gv.short(v), "venue")
+        ev.edges.append({"source": 0, "target": i, "kind": "similar", "similarity": sim})
+    return ev
+
+
+def venue_families(con, seasons=None) -> Evidence:
+    ev = Evidence("venue_families", title=f"Families of grounds {_venue_scope(seasons)}")
+    fams = gv.families(con, seasons)
+    if not fams:
+        ev.gap = "Not enough grounds with matches for families."
+    for f in fams:
+        ev.add(f"'{f['name']}': {', '.join(f['venues'])} ({f['matches']} matches)", dict(f))
+    return ev
+
+
+def _venue_line(r: dict, role: str, where: str) -> str:
+    if role == "bat":
+        avg = f"average {r['average']} v par {r['par_average']}" if r["average"] is not None else "not out"
+        return (f"{r['player']} at {where}: {r['above_par']} runs above par per 100 balls ({r['runs']} off {r['balls']} balls, "
+                f"strike rate {r['strike_rate']} v par {r['par_strike_rate']}; {avg})")  # fmt: skip
+    return (f"{r['player']} at {where}: {r['runs_saved']} runs saved per 24 balls ({r['wickets']} wickets in {r['balls']} balls, "
+            f"economy {r['economy']} v par {r['par_economy']}; {r['wickets_above_par']} wickets above par)")  # fmt: skip
+
+
+def venue_masters(con, venue: str, role: str = "bat", seasons=None, top: int = 6) -> Evidence:
+    rows = gv.masters(con, venue, role, seasons, top=top)
+    what = "batters" if role == "bat" else "bowlers"
+    ev = Evidence("venue_masters", title=f"The {what} who beat {venue}'s par most")
+    if not rows:
+        ev.gap = f"No {what} with 120 balls at {venue} {_venue_scope(seasons)}."
+        return ev
+    ev.add(
+        f"Par = everyone else at {venue} in the same seasons; min 120 balls; rates steadied toward par by 60 balls"
+    )
+    ev.node(0, gv.short(venue), "venue")
+    for i, r in enumerate(rows, 1):
+        ev.add(f"#{i} " + _venue_line(r, role, venue), r)
+        ev.node(i, r["player"], "batter" if role == "bat" else "bowler")
+        ev.edges.append(
+            {
+                "source": i,
+                "target": 0,
+                "kind": "venue_par",
+                "value": r["above_par" if role == "bat" else "runs_saved"],
+            }
+        )
+    return ev
+
+
+def player_venues(
+    con, pid: int, role: str = "bat", seasons=None, venue: str | None = None, top: int = 6
+) -> Evidence:
+    name = name_of(con, pid)
+    rows = gv.player_venues(con, pid, role, seasons)
+    ev = Evidence("player_venues", title=f"{name} at each ground, against its par")
+    if venue:
+        rows = [r for r in rows if r["venue"] == venue] or [
+            r for r in gv.player_venues(con, pid, role, seasons, min_balls=1) if r["venue"] == venue
+        ]
+    if not rows:
+        ev.gap = f"{name} has not {'batted' if role == 'bat' else 'bowled'} 60 balls at any ground {_venue_scope(seasons)}." if not venue \
+            else f"{name} has no {'batting' if role == 'bat' else 'bowling'} at {venue} {_venue_scope(seasons)}."  # fmt: skip
+        return ev
+    ev.add(
+        "Par = everyone else at the ground in the same seasons; min 60 balls; rates steadied toward par by 60 balls"
+    )
+    picked = rows if venue else rows[:top] + [r for r in rows[top:][-2:] if r not in rows[:top]]
+    ev.node(0, name, "batter" if role == "bat" else "bowler")
+    for i, r in enumerate(picked, 1):
+        ev.add(_venue_line(r, role, r["venue"]), r)
+        ev.node(i, gv.short(r["venue"]), "venue")
+        ev.edges.append(
+            {
+                "source": 0,
+                "target": i,
+                "kind": "venue_par",
+                "value": r["above_par" if role == "bat" else "runs_saved"],
+            }
+        )
     return ev

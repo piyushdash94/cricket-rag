@@ -49,6 +49,20 @@ def spin_type_sql(s: str = "s") -> str:
         WHEN {st} LIKE '%off%' THEN 'off-spin' END"""
 
 
+# Bowling type with the arm, for dismissal profiles. In this archive every off-spinner and leg-spinner bowls
+# right-arm (ESPN lists no left-arm offbreak), so the arm is stated for all six.
+BOWL_TYPES = ("right-arm pace", "left-arm pace", "right-arm off-spin", "right-arm leg-spin", "left-arm orthodox",
+              "left-arm wrist-spin")  # fmt: skip
+
+
+def bowl_type_sql(s: str = "s") -> str:
+    """SQL for the arm-and-type label of a player_styles row aliased `s` (NULL when unknown)."""
+    return f"""CASE WHEN {s}.bowl_kind = 'pace' AND {s}.bowl_arm IN ('left', 'right') THEN {s}.bowl_arm || '-arm pace'
+        ELSE CASE {spin_type_sql(s)} WHEN 'off-spin' THEN {s}.bowl_arm || '-arm off-spin'
+                                     WHEN 'leg-spin' THEN {s}.bowl_arm || '-arm leg-spin'
+                                     ELSE {spin_type_sql(s)} END END"""
+
+
 # Anyone with a delivery, a scorecard line or a catch is a player; officials in player_styles are not.
 PLAYERS = """SELECT batter_id AS id FROM balls UNION SELECT bowler_id FROM balls
     UNION SELECT player_id FROM cs_batting_card UNION SELECT player_id FROM cs_bowling_card"""

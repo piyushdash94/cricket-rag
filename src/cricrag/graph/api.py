@@ -12,7 +12,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 from cricrag.graph import explore as gx
 from cricrag.graph import tools as gt
-from cricrag.styles import SPIN_TYPES
+from cricrag.graph import venues as gv
+from cricrag.styles import BOWL_TYPES
 
 
 def router(db_path: Callable[[], Path]) -> APIRouter:
@@ -66,7 +67,7 @@ def router(db_path: Callable[[], Path]) -> APIRouter:
 
     @r.get("/player/{pid}")
     def player(pid: int, season: str | None = None):
-        """Ego network: who troubles them, whom they trouble, their catch partners, their teammates."""
+        """Ego network: who troubles them, whom they trouble, their catch partners."""
         with lock:
             c = con()
             name = gt.name_of(c, pid)
@@ -77,7 +78,6 @@ def router(db_path: Callable[[], Path]) -> APIRouter:
             parts.append(gt.catch_pairs(c, fielder=pid, seasons=seasons(season), top=5))
             if bowled >= 60:
                 parts.append(gt.catch_pairs(c, bowler=pid, seasons=seasons(season), top=5))
-            parts.append(gt.teammates(c, pid, seasons(season), top=6))
             return {"id": pid, "name": name, "faced": faced, "bowled": bowled,
                     "sections": [p.as_payload() | {"gap": p.gap, "lines": p.lines} for p in parts]}  # fmt: skip
 
@@ -105,11 +105,11 @@ def router(db_path: Callable[[], Path]) -> APIRouter:
             rows = (gx.bowler_rank if kind == "bowler" else gx.batter_rank)(con(), picked, top=min(top, 50))
             least = gx.qualify(picked, None)
             note = (
-                "Quality wickets: each wicket weighted by the batter's average in the same seasons, so a wicket "
-                "of a batter averaging 40 counts twice one averaging 20"
+                "Quality wickets: each wicket weighted by the batter's average x strike rate in the same seasons, "
+                "against the league's, so a batter who scores more and faster counts for more"
                 if kind == "bowler"
-                else "Quality runs: each run weighted by how hard that bowler was to score off per wicket, "
-                "against the league (runs off a miserly bowler count for more)"
+                else "Quality runs: each run weighted by the bowler's average x economy against the league's "
+                "(runs off a bowler who concedes little and takes wickets count for more)"
             )
             return {"kind": kind, "season": picked[0] if picked else None, "min_balls": least,
                     "note": f"{note}. Min {least} balls.", "rows": rows}  # fmt: skip
@@ -134,8 +134,47 @@ def router(db_path: Callable[[], Path]) -> APIRouter:
                 return {"total": sum(e["n"] for e in ranked), "groups": ranked}
 
             return {"id": pid, "name": name, "season": season,
-                    "batter": side(prof["batter"], ("pace", *SPIN_TYPES, "unknown")),
-                    "bowler": side(prof["bowler"], gx.BANDS)}  # fmt: skip
+                    "batter": side(prof["batter"], (*BOWL_TYPES, "unknown")),
+                    "bowler": side(prof["bowler"], gx.BANDS),
+                    "hand": side(prof["hand"], ("right-handed", "left-handed"))}  # fmt: skip
+
+    @r.get("/venues")
+    def venues(season: str | None = None, year: int | None = None):
+        """Grounds with a profile (MIN_MATCHES), most-played first, and the families the venue graph forms."""
+        with lock:
+            c, picked = con(), seasons(season, year)
+            prof = gv.profiles(c, picked)
+            return {"venues": [{"name": v, "short": gv.short(v), "matches": p["matches"]} for v, p in sorted(prof.items(), key=lambda t: -t[1]["matches"])],
+                    "families": gv.families(c, picked), "min_matches": gv.MIN_MATCHES}  # fmt: skip
+
+    @r.get("/venue")
+    def venue(name: str, season: str | None = None, year: int | None = None):
+        """One ground: the grounds that play like it, its profile against the IPL, and who beats its par."""
+        with lock:
+            c, picked = con(), seasons(season, year)
+            prof = gv.profiles(c, picked)
+            if name not in prof:
+                raise HTTPException(404, f"{name} has fewer than {gv.MIN_MATCHES} matches in this range")
+            like = gt.venue_like(c, name, picked)
+            me = prof[name]
+            features = [{"key": k, "label": label, "unit": unit, "value": me[k], "delta": me["delta"][k]}
+                        for k, (label, unit, _) in gv.FEATURES.items()]  # fmt: skip
+            return {"name": name, "short": gv.short(name), "matches": me["matches"], "family": (gv.family_of(c, name, picked) or {}).get("name"),
+                    "like": like.as_payload() | {"gap": like.gap}, "features": features,
+                    "batters": gv.masters(c, name, "bat", picked), "bowlers": gv.masters(c, name, "bowl", picked)}  # fmt: skip
+
+    @r.get("/player-venues/{pid}")
+    def player_venues(pid: int, role: str = "bat", season: str | None = None):
+        if role not in ("bat", "bowl"):
+            raise HTTPException(400, "role is bat or bowl")
+        with lock:
+            c = con()
+            return {
+                "id": pid,
+                "name": gt.name_of(c, pid),
+                "role": role,
+                "rows": gv.player_venues(c, pid, role, seasons(season)),
+            }
 
     @r.get("/pairs")
     def pairs(season: str | None = None, year: int | None = None, top: int = 6):

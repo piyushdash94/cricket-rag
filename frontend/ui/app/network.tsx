@@ -16,12 +16,12 @@ export type GraphEdge = { source: number; target: number; kind: string; [k: stri
 export type GraphPayload = { tool: string; title: string; nodes: GraphNode[]; edges: GraphEdge[]; rows: Record<string, unknown>[]; gap?: string | null; lines?: string[] };
 export type GraphCard = GraphPayload & { type: "graph" };
 
-type Tab = "rivalry" | "fielding" | "rankings" | "dismissals" | "checks";
+type Tab = "rivalry" | "fielding" | "rankings" | "dismissals" | "grounds";
 const TABS: { id: Tab; label: string }[] = [
   { id: "rivalry", label: "Rivalry" }, { id: "fielding", label: "Fielding web" }, { id: "rankings", label: "Rankings" },
-  { id: "dismissals", label: "How they get out" }, { id: "checks", label: "Build checks" },
+  { id: "dismissals", label: "How they get out" }, { id: "grounds", label: "Grounds" },
 ];
-const ROLE_COLOR: Record<string, string> = { batter: "var(--accent)", bowler: "var(--red)", fielder: "var(--amber)", player: "var(--accent)" };
+const ROLE_COLOR: Record<string, string> = { batter: "var(--accent)", bowler: "var(--red)", fielder: "var(--amber)", player: "var(--accent)", venue: "var(--green, #2f9e5b)" };
 
 async function get<T>(path: string): Promise<T> {
   const r = await fetch(`${API_BASE}${path}`);
@@ -31,11 +31,11 @@ async function get<T>(path: string): Promise<T> {
 
 /** The count an edge is about (dismissals, drops, seasons together, balls). */
 function weight(e: GraphEdge): number {
-  return Number(e.dismissals ?? e.drops ?? e.seasons ?? e.balls ?? 1) || 1;
+  return Math.abs(Number(e.dismissals ?? e.drops ?? e.similarity ?? e.value ?? e.seasons ?? e.balls ?? 1)) || 1;
 }
 function unitOf(edges: GraphEdge[]): string {
   const k = edges[0]?.kind;
-  return k === "dropped_off" ? "drops" : k === "teammates" ? "seasons together" : k === "bowled_to" ? "balls" : "dismissals";
+  return k === "dropped_off" ? "drops" : k === "teammates" ? "seasons together" : k === "bowled_to" ? "balls" : k === "similar" ? "% alike" : k === "venue_par" ? "v par" : "dismissals";
 }
 
 /** Width and shade spread over the range actually shown (min..max), so 5 against 7 is visible, not 5 against 7 out of 0..7. */
@@ -53,6 +53,8 @@ function edgeLabel(e: GraphEdge): string {
   if (e.kind === "dropped_off") return `${e.drops}`;
   if (e.kind === "teammates") return e.season ? `${e.team} ${e.season}` : `${e.seasons}`;
   if (e.kind === "profile") return `${e.dismissals}`;
+  if (e.kind === "similar") return `${e.similarity}%`;
+  if (e.kind === "venue_par") return `${Number(e.value) > 0 ? "+" : ""}${e.value}`;
   return "";
 }
 function edgeTitle(e: GraphEdge, name: (id: number) => string): string {
@@ -84,7 +86,7 @@ function Legend({ edges, nodes }: { edges: GraphEdge[]; nodes: GraphNode[] }) {
   if (!edges.length) return null;
   const { lo, hi } = scale(edges);
   const roles = new Set(nodes.map((n) => (n.keeper ? "keeper" : n.role)));
-  const label: Record<string, string> = { batter: "batter", bowler: "bowler", fielder: "fielder", keeper: "wicketkeeper", player: "player" };
+  const label: Record<string, string> = { batter: "batter", bowler: "bowler", fielder: "fielder", keeper: "wicketkeeper", player: "player", venue: "ground" };
   return <div className="net-legend">
     <span className="net-legend-scale"><i style={{ height: 2 }} />{lo}<i style={{ height: 11 }} />{hi} {unitOf(edges)}</span>
     {[...roles].map((r) => <span key={r}><b className={`dot ${r}`} />{label[r] ?? r}</span>)}
@@ -125,8 +127,9 @@ export function GraphView({ nodes, edges, height = 300, chain = false }: { nodes
         if (!a || !b) return null;
         const outer = center && e.source === center.id ? b : center && e.target === center.id ? a : null;
         const inner = outer === a ? b : a;
-        const lx = outer ? inner.x + 0.55 * (outer.x - inner.x) : (a.x + b.x) / 2;
-        const ly = outer ? inner.y + 0.55 * (outer.y - inner.y) : (a.y + b.y) / 2;
+        const t = outer && outer.y > inner.y + 4 ? 0.7 : 0.55; // edges running down keep their count clear of the centre's name
+        const lx = outer ? inner.x + t * (outer.x - inner.x) : (a.x + b.x) / 2;
+        const ly = outer ? inner.y + t * (outer.y - inner.y) : (a.y + b.y) / 2;
         return <Chip key={i} x={lx} y={ly} text={edgeLabel(e)} strong={weight(e) === sc.hi} />;
       })}
       {nodes.map((n) => { const p = pos.get(n.id); if (!p) return null; const big = n === center;
@@ -233,7 +236,6 @@ export function PairMatrix({ edges, nodes, metric }: { edges: GraphEdge[]; nodes
 const COLS: Record<string, [string, string][]> = {
   nemesis: [["bowler", "Bowler"], ["dismissals", "Outs"], ["balls", "Balls"], ["runs", "Runs"], ["strike_rate", "SR"]],
   bunnies: [["batter", "Batter"], ["dismissals", "Outs"], ["balls", "Balls"], ["runs", "Runs"], ["strike_rate", "SR"]],
-  teammates: [["teammate", "Teammate"], ["seasons", "Seasons"], ["teams", "Teams"]],
 };
 function MiniTable({ sec, name }: { sec: GraphPayload; name: string }) {
   const cols = sec.tool === "catch_pairs"
@@ -247,15 +249,15 @@ function MiniTable({ sec, name }: { sec: GraphPayload; name: string }) {
 function shortTitle(sec: GraphPayload, name: string): string {
   if (sec.tool === "nemesis") return `Got ${name} out most`;
   if (sec.tool === "bunnies") return `${name}'s most frequent victims`;
-  if (sec.tool === "teammates") return "Most seasons together";
   if (sec.tool === "catch_pairs") return sec.rows[0]?.fielder === name ? `Catches ${name} took, by bowler` : `Caught off ${name}'s bowling`;
   return sec.title;
 }
 /** One-off links (every count 1) say nothing about a rivalry: those sections are left out. */
-const worthShowing = (sec: GraphPayload) => sec.tool === "teammates" || sec.rows.some((r) => Number(r.dismissals ?? 0) >= 2);
+const worthShowing = (sec: GraphPayload) => sec.tool !== "teammates" && sec.rows.some((r) => Number(r.dismissals ?? 0) >= 2);
 
 /** The chat card for a relational answer: the subgraph behind it, plus a way into the Network tab. */
 export function GraphChatCard({ card, onOpen }: { card: GraphCard; onOpen: () => void }) {
+  if (card.tool === "teammates") return null; // seasons together: the answer's text says it; no picture
   return <article className="chat-card net-card">
     <header><div><p className="section-kicker">RELATIONAL GRAPH · {card.tool.replace(/_/g, " ")}</p><h3>{card.title}</h3></div></header>
     {card.tool === "catch_pairs" || card.tool === "drops"
@@ -285,7 +287,6 @@ export function NetworkPanel({ onClose, onAsk }: { onClose: () => void; onAsk: (
   const [kind, setKind] = useState<"bowler" | "batter">("bowler");
   const [ranks, setRanks] = useState<{ note: string; rows: Record<string, string | number>[] } | null>(null);
   const [outs, setOuts] = useState<Profile | null>(null);
-  const [checks, setChecks] = useState<{ report: { section: string; check: string; value: string }[]; counts: Record<string, number> } | null>(null);
   const sq = season ? `season=${encodeURIComponent(season)}` : "";
 
   const [pid, setPid] = useState<number | null>(null);
@@ -310,7 +311,6 @@ export function NetworkPanel({ onClose, onAsk }: { onClose: () => void; onAsk: (
   useEffect(() => { if (tab === "fielding") get<{ catches: GraphPayload; drops: GraphPayload }>(`/api/graph/fielding?team=${team}&${sq}`).then(setField).catch(() => setField(null)); }, [tab, team, sq]);
   useEffect(() => { if (tab === "rankings") get<{ note: string; rows: Record<string, string | number>[] }>(`/api/graph/rankings?kind=${kind}&${sq}`).then(setRanks).catch(() => setRanks(null)); }, [tab, kind, sq]);
   useEffect(() => { if (tab === "dismissals" && pid !== null) get<Profile>(`/api/graph/dismissals/${pid}?${sq}`).then(setOuts).catch(() => setOuts(null)); }, [tab, pid, sq]);
-  useEffect(() => { if (tab === "checks") get<typeof checks>("/api/graph/status").then(setChecks).catch(() => setChecks(null)); }, [tab]);
 
   const web = field ? (metric === "drops" ? field.drops : field.catches) : null;
   const rankMax = useMemo(() => Math.max(1, ...(ranks?.rows ?? []).map((r) => Number(r.score))), [ranks]);
@@ -338,7 +338,7 @@ export function NetworkPanel({ onClose, onAsk }: { onClose: () => void; onAsk: (
       <button role="tab" aria-selected={tab === t.id} className={tab === t.id ? "active" : ""} key={t.id} onClick={() => setTab(t.id)}>{t.label}</button>)}
     </div>
     <div className="workspace-body net-body">
-      {(tab === "rivalry" || tab === "dismissals") && <form className="net-search" onSubmit={search}>
+      {(tab === "rivalry" || tab === "dismissals" || tab === "grounds") && <form className="net-search" onSubmit={search}>
           <input aria-label="Player" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Player name" />
           <button>Show</button>
           {hits.length > 1 && <select aria-label="Pick a player" value={pid ?? ""} onChange={(e) => setPid(Number(e.target.value))}>
@@ -390,25 +390,21 @@ export function NetworkPanel({ onClose, onAsk }: { onClose: () => void; onAsk: (
       {tab === "dismissals" && outs && <>
         {outs.batter.total < MIN_PROFILE && outs.bowler.total < MIN_PROFILE && <p className="stats-note">Fewer than {MIN_PROFILE} bowler-credited wickets for {outs.name} {season ? `in ${season}` : "in the archive"}: too few to profile.</p>}
         {outs.batter.total >= MIN_PROFILE && <ProfileCard p={outs} side="batter" season={season} onAsk={onAsk} />}
-        {outs.bowler.total >= MIN_PROFILE && <ProfileCard p={outs} side="bowler" season={season} onAsk={onAsk} />}
+        {outs.bowler.total >= MIN_PROFILE && <ProfileCard p={outs} side="bowler" season={season} onAsk={onAsk} hands={outs.hand} />}
         <p className="stats-note">Wickets credited to the bowler only: run outs are the fielder&apos;s and are left out. Bowling type from ESPN profiles (pace is every speed); top order = batting 1-3, middle = 4-7, tail = 8 and below.</p>
       </>}
-      {tab === "checks" && checks && <section className="chat-card net-section">
-        <header><h3>How the graph was checked</h3></header>
-        <table className="net-table"><tbody>{checks.report.map((r) => <tr key={r.check}><td>{r.section}</td><td>{r.check}</td><td className={r.value.includes("MISMATCH") ? "bad" : ""}>{r.value}</td></tr>)}</tbody></table>
-        <p className="stats-note">{Object.entries(checks.counts).map(([k, v]) => `${k}: ${v.toLocaleString()}`).join(" · ")}</p>
-      </section>}
+      {tab === "grounds" && <GroundsTab season={season} pid={pid} player={player?.name ?? query} onAsk={onAsk} />}
     </div>
   </div>;
 }
 
 type Side = { total: number; groups: { group: string; n: number; modes: Record<string, number> }[] };
-type Profile = { id: number; name: string; season: string | null; batter: Side; bowler: Side };
+type Profile = { id: number; name: string; season: string | null; batter: Side; bowler: Side; hand: Side };
 const MODES = ["caught", "bowled", "lbw", "stumped", "hit wicket"];
 const MIN_PROFILE = 5; // a profile of one or two wickets is noise (Kohli the bowler: 4)
 
 /** One player and his wicket profile: a radial picture (who or what got him, by count) and the same counts by mode. */
-function ProfileCard({ p, side, season, onAsk }: { p: Profile; side: "batter" | "bowler"; season: string; onAsk: (q: string) => void }) {
+function ProfileCard({ p, side, season, onAsk, hands }: { p: Profile; side: "batter" | "bowler"; season: string; onAsk: (q: string) => void; hands?: Side }) {
   const s = p[side];
   const nodes: GraphNode[] = [{ id: 0, label: p.name, role: side, center: true },
     ...s.groups.map((g, i) => ({ id: i + 1, label: g.group, role: side === "batter" ? "bowler" : "batter" }))];
@@ -424,14 +420,94 @@ function ProfileCard({ p, side, season, onAsk }: { p: Profile; side: "batter" | 
       <tbody>{s.groups.map((g) => <tr key={g.group}><th scope="row">{g.group}</th>
         {modes.map((m) => { const v = g.modes[m] ?? 0; return <td key={m} className={v ? "hit" : ""} style={v ? { "--share": `${Math.round(15 + 70 * v / hi)}%` } as CSSProperties : undefined}>{v || ""}</td>; })}
         <td className="total">{g.n}</td><td className="total">{Math.round((100 * g.n) / s.total)}%</td></tr>)}</tbody></table>
+    {hands && hands.total > 0 && <ModeTable s={hands} head="Batter's hand" />}
   </section>;
+}
+
+function ModeTable({ s, head }: { s: Side; head: string }) {
+  const modes = MODES.filter((m) => s.groups.some((g) => g.modes[m]));
+  const hi = Math.max(...s.groups.flatMap((g) => modes.map((m) => g.modes[m] ?? 0)));
+  return <table className="net-mini net-modes"><thead><tr><th>{head}</th>{modes.map((m) => <th key={m}>{m}</th>)}<th>Total</th><th>Share</th></tr></thead>
+    <tbody>{s.groups.map((g) => <tr key={g.group}><th scope="row">{g.group}</th>
+      {modes.map((m) => { const v = g.modes[m] ?? 0; return <td key={m} className={v ? "hit" : ""} style={v ? { "--share": `${Math.round(15 + 70 * v / hi)}%` } as CSSProperties : undefined}>{v || ""}</td>; })}
+      <td className="total">{g.n}</td><td className="total">{Math.round((100 * g.n) / s.total)}%</td></tr>)}</tbody></table>;
+}
+
+type Feature = { key: string; label: string; unit: string; value: number | null; delta: number };
+type VenueRow = Record<string, string | number | null>;
+type Venue = { name: string; short: string; matches: number; family: string | null; like: GraphPayload; features: Feature[]; batters: VenueRow[]; bowlers: VenueRow[] };
+type Families = { venues: { name: string; matches: number }[]; families: { name: string; venues: string[]; matches: number }[]; min_matches: number };
+const fmt = (v: number | null, unit: string) => v === null ? "–" : unit === "%" ? `${v.toFixed(1)}%` : unit === "runs" ? v.toFixed(0) : v.toFixed(2);
+const signed = (v: number, unit: string) => `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(unit === "runs" ? 0 : unit === "%" ? 1 : 2)}${unit === "%" ? " pts" : ""}`;
+
+/** Grounds as a network: the grounds that play alike (an era-adjusted profile), the families that graph forms, and
+ *  who beats each ground's par. Par = everyone else at the ground in the same seasons. */
+function GroundsTab({ season, pid, player, onAsk }: { season: string; pid: number | null; player: string; onAsk: (q: string) => void }) {
+  const sq = season ? `season=${encodeURIComponent(season)}` : "";
+  const [list, setList] = useState<Families | null>(null);
+  const [name, setName] = useState("");
+  const [v, setV] = useState<Venue | null>(null);
+  const [role, setRole] = useState<"bat" | "bowl">("bat");
+  const [mine, setMine] = useState<{ name: string; rows: VenueRow[] } | null>(null);
+  useEffect(() => { get<Families>(`/api/graph/venues?${sq}`).then((r) => { setList(r); setName((n) => (r.venues.some((x) => x.name === n) ? n : r.venues[0]?.name ?? "")); }).catch(() => setList(null)); }, [sq]);
+  useEffect(() => { if (name) get<Venue>(`/api/graph/venue?name=${encodeURIComponent(name)}&${sq}`).then(setV).catch(() => setV(null)); }, [name, sq]);
+  useEffect(() => { if (pid !== null) get<{ name: string; rows: VenueRow[] }>(`/api/graph/player-venues/${pid}?role=${role}&${sq}`).then(setMine).catch(() => setMine(null)); }, [pid, role, sq]);
+  if (!list) return null;
+  if (!list.venues.length) return <p className="stats-note">No ground has {list.min_matches} matches in this range.</p>;
+  const scope = season ? ` in ${season}` : "";
+  return <>
+    <div className="net-search">
+      <select aria-label="Ground" value={name} onChange={(e) => setName(e.target.value)}>{list.venues.map((x) => <option key={x.name} value={x.name}>{x.name} ({x.matches})</option>)}</select>
+    </div>
+    {v && <section className="chat-card net-section">
+      <header><h3>{v.short} plays like…</h3><button className="net-ask" onClick={() => onAsk(`Which grounds play like ${v.name}${scope}?`)}>Ask Pandit</button></header>
+      <p className="stats-note">{v.matches} matches · family: <b>{v.family ?? "–"}</b>. Similarity compares six numbers, each taken against the IPL of the same seasons (100% = the same profile).</p>
+      {v.like.gap ? <p className="stats-note">{v.like.gap}</p> : <GraphView nodes={v.like.nodes} edges={v.like.edges} height={300} />}
+      <table className="net-mini"><thead><tr><th>Profile</th><th>{v.short}</th><th>v IPL, same seasons</th></tr></thead>
+        <tbody>{v.features.map((f) => <tr key={f.key}><td>{f.label}</td><td>{fmt(f.value, f.unit)}</td><td className={f.delta >= 0 ? "up" : "down"}>{signed(f.delta, f.unit)}</td></tr>)}</tbody></table>
+    </section>}
+    {v && <section className="chat-card net-section">
+      <header><h3>Who beats {v.name}&apos;s par</h3><button className="net-ask" onClick={() => onAsk(`Who are the best batters at ${v.name} against par${scope}?`)}>Ask Pandit</button></header>
+      <div className="net-two">
+        <ParTable rows={v.batters} role="bat" title="Batters · runs above par per 100 balls" who="player" />
+        <ParTable rows={v.bowlers} role="bowl" title="Bowlers · runs saved per 24 balls" who="player" />
+      </div>
+      <p className="stats-note">Par = everyone else at this ground in the same seasons; min 120 balls; rates steadied toward par by 60 balls, so a short hot streak cannot top the list.</p>
+    </section>}
+    {mine && <section className="chat-card net-section">
+      <header><h3>{mine.name} by ground</h3>
+        <div className="seg" role="group" aria-label="Role">
+          <button className={role === "bat" ? "active" : ""} onClick={() => setRole("bat")}>Batting</button>
+          <button className={role === "bowl" ? "active" : ""} onClick={() => setRole("bowl")}>Bowling</button>
+        </div></header>
+      {mine.rows.length ? <ParTable rows={mine.rows} role={role} title={role === "bat" ? "Runs above par per 100 balls" : "Runs saved per 24 balls"} who="venue" bars />
+        : <p className="stats-note">{player} has not {role === "bat" ? "batted" : "bowled"} 60 balls at any ground{scope}.</p>}
+    </section>}
+    <section className="chat-card net-section">
+      <header><h3>Families of grounds{scope}</h3><button className="net-ask" onClick={() => onAsk(`What are the different types of IPL grounds${scope}?`)}>Ask Pandit</button></header>
+      <p className="stats-note">Each ground is linked to the three it plays most like; the communities of that graph are the families, named by their strongest traits.</p>
+      <div className="net-families">{list.families.map((f) => <div key={f.name}><b>{f.name}</b><span>{f.venues.map((x) => <button key={x} className={x === name ? "on" : ""} onClick={() => setName(x)}>{x}</button>)}</span></div>)}</div>
+    </section>
+  </>;
+}
+
+function ParTable({ rows, role, title, who, bars }: { rows: VenueRow[]; role: "bat" | "bowl"; title: string; who: "player" | "venue"; bars?: boolean }) {
+  const key = role === "bat" ? "above_par" : "runs_saved";
+  const hi = Math.max(1, ...rows.map((r) => Math.abs(Number(r[key]))));
+  return <div className="net-par"><p className="section-kicker">{title}</p>
+    <table className="net-mini"><thead><tr><th>{who === "player" ? (role === "bat" ? "Batter" : "Bowler") : "Ground"}</th><th>{role === "bat" ? "+/100" : "Saved/24"}</th>
+      {role === "bat" ? <><th>SR v par</th><th>Avg v par</th></> : <><th>Econ v par</th><th>Wkts</th></>}<th>Balls</th></tr></thead>
+      <tbody>{rows.map((r) => { const val = Number(r[key]); return <tr key={String(r[who])}><td>{String(r[who])}</td>
+        <td className={`par ${val >= 0 ? "up" : "down"}`}>{bars && <i style={{ width: `${(48 * Math.abs(val)) / hi}px` }} />}{val > 0 ? "+" : ""}{val}</td>
+        {role === "bat" ? <><td>{r.strike_rate} <small>v {r.par_strike_rate}</small></td><td>{r.average ?? "no out"} <small>v {r.par_average ?? "–"}</small></td></>
+          : <><td>{r.economy} <small>v {r.par_economy}</small></td><td>{r.wickets}</td></>}
+        <td>{r.balls}</td></tr>; })}</tbody></table></div>;
 }
 
 function askFor(sec: GraphPayload, name: string, season: string): string {
   const s = season ? ` in ${season}` : "";
   if (sec.tool === "nemesis") return `Who is ${name}'s nemesis${s}?`;
   if (sec.tool === "bunnies") return `Who is ${name}'s favourite victim${s}?`;
-  if (sec.tool === "teammates") return `Who has ${name} played with the most${s}?`;
   return `Which fielder-bowler pairs involve ${name}${s}?`;
 }
 
@@ -464,7 +540,7 @@ export function SeasonNetwork({ season, onOpen }: { season: number; onOpen: () =
         {ranks ? <ol className="net-rank compact">{ranks.rows.map((r) => <li key={r.player}>
           <span>{r.player}<small>{r.wickets} wkts · {r["top order"]} top order</small></span><i style={{ width: `${(100 * r.score) / max}%` }} /><b>{r.score}</b></li>)}</ol>
           : <div className="fp-net-skeleton" />}
-        <p className="stats-note">Each wicket weighted by the batter&apos;s average that season (a 40-average batter counts twice a 20). Min {ranks?.min_balls ?? 120} balls.</p>
+        <p className="stats-note">Each wicket weighted by the batter&apos;s average × strike rate that season, against the league&apos;s. Min {ranks?.min_balls ?? 120} balls.</p>
       </article>
       <article className="fp-net-card">
         <p className="section-kicker">CATCHING PAIRS · C / ST X B Y</p>

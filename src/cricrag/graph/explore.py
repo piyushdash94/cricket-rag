@@ -1,9 +1,9 @@
 """Analytics over data/graph.duckdb. Every number comes from the edge tables, so a writer can cite it.
 
-  bowler_rank        quality wickets: each wicket weighted by the victim's average in the same seasons
-                     (a wicket of a batter averaging 40 counts twice one averaging 20), plus top/middle/tail split
-  batter_rank        quality runs: runs weighted by how hard each bowler was to score off per wicket
-  dismissal_profile  how a batter gets out (bowling type x mode) and whom a bowler dismisses (batting order x mode)
+  bowler_rank        quality wickets: each wicket weighted by the victim's average x strike rate in the same seasons,
+                     against the league's (T20: how many and how fast), plus top/middle/tail split
+  batter_rank        quality runs: runs weighted by the bowler's average x economy (lower = harder) against the league's
+  dismissal_profile  how a batter gets out (bowling type and arm x mode) and whom a bowler dismisses (order, hand x mode)
   nemesis            the bowlers who dismissed one batter most, with balls/runs between them
   fielder_bowler     caught / stumped pairs ("c X b Y")
   teammate_graph     players linked by seasons in the same team (for the connection tool's paths)
@@ -19,6 +19,7 @@ import networkx as nx
 
 SEASONS = "({col} IN ({ph}))"
 SHRINK = 3  # pseudo-dismissals pulling a small-sample average toward the league's ("60 off 1 out" is not 60)
+SHRINK_BALLS = 30  # pseudo-balls doing the same for a strike rate or an economy
 BANDS = ("top order", "middle order", "tail")
 
 
@@ -39,23 +40,30 @@ def names(con) -> dict[int, str]:
     return dict(con.execute("SELECT player_id, name FROM people").fetchall())
 
 
-def _averages(con, w: str, p: list, by: str) -> tuple[dict[int, float], float]:
-    """Shrunk runs per dismissal by batter_id or bowler_id in the seasons, and the league's."""
-    runs, outs = con.execute(f"SELECT sum(runs), sum(dismissals) FROM bowled_to WHERE {w}", p).fetchone() or (
-        0,
-        0,
-    )
-    league = (runs or 0) / max(outs or 0, 1)
+def _index(con, w: str, p: list, by: str) -> tuple[dict[int, float], float]:
+    """Shrunk average x strike rate (runs per dismissal x runs per ball) by batter_id or bowler_id, and the league's.
+
+    For a batter it is how dangerous he is (a 40-average at 150 beats a 40-average at 110); for a bowler the same
+    product is what he concedes, so lower is better. Small samples are pulled to the league: SHRINK dismissals for
+    the average and SHRINK_BALLS balls for the rate.
+    """
+    runs, balls, outs = con.execute(
+        f"SELECT sum(runs), sum(balls), sum(dismissals) FROM bowled_to WHERE {w}", p
+    ).fetchone() or (0, 0, 0)
+    l_avg, l_rpb = (runs or 0) / max(outs or 0, 1), (runs or 0) / max(balls or 0, 1)
     rows = con.execute(
-        f"SELECT {by}, sum(runs), sum(dismissals) FROM bowled_to WHERE {w} GROUP BY 1", p
+        f"SELECT {by}, sum(runs), sum(balls), sum(dismissals) FROM bowled_to WHERE {w} GROUP BY 1", p
     ).fetchall()
-    return {k: (r + SHRINK * league) / (o + SHRINK) for k, r, o in rows}, league
+    return {
+        k: (r + SHRINK * l_avg) / (o + SHRINK) * (r + SHRINK_BALLS * l_rpb) / (b + SHRINK_BALLS)
+        for k, r, b, o in rows
+    }, l_avg * l_rpb
 
 
 def bowler_rank(con, seasons=None, min_balls: int | None = None, top: int = 15) -> list[dict]:
     """Bowlers by quality wickets (min balls bowled): wickets, quality wickets, and top / middle / tail wickets."""
     w, p = _where(seasons)
-    avg, league = _averages(con, w, p, "batter_id")
+    idx, league = _index(con, w, p, "batter_id")
     vol = dict(con.execute(f"SELECT bowler_id, sum(balls) FROM bowled_to WHERE {w} GROUP BY 1", p).fetchall())
     nm, least = names(con), qualify(seasons, min_balls)
     out: dict[int, dict] = {}
@@ -67,7 +75,7 @@ def bowler_rank(con, seasons=None, min_balls: int | None = None, top: int = 15) 
         r = out.setdefault(
             b, {"player": nm.get(b, str(b)), "score": 0.0, "wickets": 0, **dict.fromkeys(BANDS, 0)}
         )
-        r["score"] += n * avg.get(v, league) / league
+        r["score"] += n * idx.get(v, league) / league
         r["wickets"] += int(n)
         if band:
             r[band] += int(n)
@@ -78,7 +86,7 @@ def bowler_rank(con, seasons=None, min_balls: int | None = None, top: int = 15) 
 def batter_rank(con, seasons=None, min_balls: int | None = None, top: int = 15) -> list[dict]:
     """Batters by quality runs (min balls faced): runs weighted by the bowler's (shrunk) average v the league's."""
     w, p = _where(seasons)
-    avg, league = _averages(con, w, p, "bowler_id")
+    idx, league = _index(con, w, p, "bowler_id")
     nm, least = names(con), qualify(seasons, min_balls)
     out: dict[int, dict] = {}
     for bat, bowl, runs, balls, outs in con.execute(
@@ -88,7 +96,7 @@ def batter_rank(con, seasons=None, min_balls: int | None = None, top: int = 15) 
         r = out.setdefault(
             bat, {"player": nm.get(bat, str(bat)), "score": 0.0, "runs": 0, "balls": 0, "outs": 0}
         )
-        r["score"] += runs * league / avg.get(bowl, league)
+        r["score"] += runs * league / idx.get(bowl, league)
         r["runs"] += int(runs)
         r["balls"] += int(balls)
         r["outs"] += int(outs)
@@ -99,13 +107,15 @@ def batter_rank(con, seasons=None, min_balls: int | None = None, top: int = 15) 
 
 
 def dismissal_profile(con, pid: int, seasons=None) -> dict[str, list[tuple[str, str, int]]]:
-    """(group, mode, n) rows: as a batter by bowling type, as a bowler by the batter's place in the order."""
+    """(group, mode, n) rows: as a batter by bowling type with the arm; as a bowler by the batter's place in the order,
+    and by the batter's hand ("hand" rows: (hand, mode, n))."""
     w, p = _where(seasons)
     q = """SELECT {g}, mode, sum(n)::INT FROM wicket_detail WHERE {who} = ? AND {w} AND {g} IS NOT NULL
            GROUP BY 1, 2 ORDER BY 3 DESC"""
     return {
         "batter": con.execute(q.format(g="bowl_type", who="batter_id", w=w), [pid, *p]).fetchall(),
         "bowler": con.execute(q.format(g="order_band", who="bowler_id", w=w), [pid, *p]).fetchall(),
+        "hand": con.execute(q.format(g="bat_hand || '-handed'", who="bowler_id", w=w), [pid, *p]).fetchall(),
     }
 
 
