@@ -29,12 +29,17 @@ def test_single_rate_needs_its_counts_but_no_qualifier():
     assert qualifier(q) is None
     # a year column is not a sample; team averages need a count, not balls
     assert sample_problem("Kohli's strike rate in 2016", ["year", "strike_rate"], [(2016, 152.0)])
-    assert sample_problem("average first innings score in 2023", ["innings", "avg_runs"], [(70, 183.2)]) is None
+    assert (
+        sample_problem("average first innings score in 2023", ["innings", "avg_runs"], [(70, 183.2)]) is None
+    )
 
 
 def test_evidence_states_the_qualification():
-    res = {"cols": ["player", "balls", "sr"], "rows": [("Shubman Gill", 65, 153.8)],
-           "note": "ranked among players with at least 60 balls"}
+    res = {
+        "cols": ["player", "balls", "sr"],
+        "rows": [("Shubman Gill", 65, 153.8)],
+        "note": "ranked among players with at least 60 balls",
+    }
     assert "at least 60 balls; say so" in evidence(res)
 
 
@@ -46,16 +51,28 @@ def test_first_initial_must_lead():
 
 def _final():
     con = duckdb.connect()
-    con.execute("create table matches as select 1::bigint match_id, '2017' season, 'Final' title, "
-                "date '2017-05-21' start_date, 'Hyderabad' venue, 'MI' team1, 'RPS' team2, 'MI won by 1 run' status_text")
-    con.execute("create table cs_innings_card as select 1::bigint match_id, 1 inning, 'MI' team, 129 runs, 8 wickets, 120 balls")
-    con.execute("create table cs_batting_card as select * from (values (1::bigint, 1, 471342::bigint, 'KH Pandya', 47, 38),"
-                " (1, 1, 625371, 'HH Pandya', 10, 8)) t(match_id, inning, player_id, player, runs, balls)")
-    con.execute("create table cs_bowling_card as select 1::bigint match_id, 1 inning, 1::bigint player_id, "
-                "'JD Unadkat' player, 24 balls, 19 conceded, 2 wickets")
-    con.execute("create table cs_awards as select 1::bigint match_id, 471342::bigint player_id, 'KH Pandya' player")
-    con.execute("create table player_styles as select * from (values (471342::bigint, 'Krunal Pandya'),"
-                " (625371, 'Hardik Pandya'), (1, 'Jaydev Unadkat')) t(player_id, name)")
+    con.execute(
+        "create table matches as select 1::bigint match_id, '2017' season, 'Final' title, "
+        "date '2017-05-21' start_date, 'Hyderabad' venue, 'MI' team1, 'RPS' team2, 'MI won by 1 run' status_text"
+    )
+    con.execute(
+        "create table cs_innings_card as select 1::bigint match_id, 1 inning, 'MI' team, 129 runs, 8 wickets, 120 balls"
+    )
+    con.execute(
+        "create table cs_batting_card as select * from (values (1::bigint, 1, 471342::bigint, 'KH Pandya', 47, 38),"
+        " (1, 1, 625371, 'HH Pandya', 10, 8)) t(match_id, inning, player_id, player, runs, balls)"
+    )
+    con.execute(
+        "create table cs_bowling_card as select 1::bigint match_id, 1 inning, 1::bigint player_id, "
+        "'JD Unadkat' player, 24 balls, 19 conceded, 2 wickets"
+    )
+    con.execute(
+        "create table cs_awards as select 1::bigint match_id, 471342::bigint player_id, 'KH Pandya' player"
+    )
+    con.execute(
+        "create table player_styles as select * from (values (471342::bigint, 'Krunal Pandya'),"
+        " (625371, 'Hardik Pandya'), (1, 'Jaydev Unadkat')) t(player_id, name)"
+    )
     return con
 
 
@@ -79,7 +96,9 @@ def test_notes_carry_sample_and_style_filter():
     from cricrag.finder import notes
 
     sql = "select sum(runs_bat) runs from balls where batter='MS Dhoni' and bowl_arm = 'left' AND bowl_kind='pace'"
-    n = notes("how much did MS dhoni average against left arm fast bowlers?", sql, ["runs", "balls", "average"])
+    n = notes(
+        "how much did MS dhoni average against left arm fast bowlers?", sql, ["runs", "balls", "average"]
+    )
     assert "bowl_arm = 'left'" in n and "bowl_kind = 'pace'" in n and "runs, balls and dismissals" in n
     assert "at least" not in n
     assert notes("who scored the most runs in 2016?", "select 1", ["player", "runs"]) == ""
@@ -94,7 +113,13 @@ def test_footnote_states_sample_filter_and_qualification():
         "Sample: 976 runs, 572 balls, 25 dismissals. Bowlers: left-arm pace of every speed (not only fast)."
     )
     sql = "select ... where year = 2022 and bowl_kind = 'spin' and bowl_arm = 'left' having balls >= 60"
-    res = {"sql": sql, "cols": ["player", "runs", "balls", "strike_rate"],
-           "rows": [("Shubman Gill", 100, 65, 153.85), ("KL Rahul", 80, 63, 127.0)]}
-    assert footnote(Q1, res) == "Top row: 100 runs, 65 balls. Bowlers: left-arm spin. Qualification: at least 60 balls."
+    res = {
+        "sql": sql,
+        "cols": ["player", "runs", "balls", "strike_rate"],
+        "rows": [("Shubman Gill", 100, 65, 153.85), ("KL Rahul", 80, 63, 127.0)],
+    }
+    assert (
+        footnote(Q1, res)
+        == "Top row: 100 runs, 65 balls. Bowlers: left-arm spin. Qualification: at least 60 balls."
+    )
     assert footnote("who hit the most sixes in 2016?", res) == ""

@@ -121,7 +121,9 @@ RATE = re.compile(r"\b(strike[ -]?rates?|averages?|averaged|economy|economies)\b
 RANKED = re.compile(r"\b(best|worst|highest|lowest|top|most|least|fastest|slowest|better|worse)\b", re.I)
 RATE_COL = re.compile(r"rate|avg|average|economy|\bsr\b|per_", re.I)
 BALLS_COL = re.compile(r"ball", re.I)
-NOT_COUNT = re.compile(r"^(year|season|inning|over|over_number|ball_in_over|position|rank|id)$|_id$", re.I)  # numeric, not a sample
+NOT_COUNT = re.compile(
+    r"^(year|season|inning|over|over_number|ball_in_over|position|rank|id)$|_id$", re.I
+)  # numeric, not a sample
 MIN_BALLS = 60  # the PROMPT's rule; code holds it, since the model can skip a prompt rule
 ASKED_BALLS = re.compile(r"\b(?:minimum(?: of)?|at least|min\.?)\s+(\d+)\s+balls\b", re.I)
 
@@ -141,20 +143,32 @@ def sample_problem(question: str, cols: list[str], rows: list[tuple]) -> str | N
     """
     if not (m := RATE.search(question)):
         return None
-    counts = [i for i, c in enumerate(cols) if not RATE_COL.search(c) and not NOT_COUNT.search(c)
-              and all(isinstance(r[i], (int, float, Decimal)) or r[i] is None for r in rows)]
+    counts = [
+        i
+        for i, c in enumerate(cols)
+        if not RATE_COL.search(c)
+        and not NOT_COUNT.search(c)
+        and all(isinstance(r[i], (int, float, Decimal)) or r[i] is None for r in rows)
+    ]
     balls = [i for i in counts if BALLS_COL.search(cols[i])]
     need = qualifier(question)
     rank = f"rank only players with at least {need} balls (HAVING balls >= {need})" if need else ""
     if not counts or (not balls and not m.group(1).lower().startswith("aver")):  # SR and economy are per ball
         what = "runs, balls, and dismissals or wickets" if not counts else "balls"
-        return "the query must return the " + what + " the rate is built on next to it" + (f", and {rank}" if rank else "")
+        return (
+            "the query must return the "
+            + what
+            + " the rate is built on next to it"
+            + (f", and {rank}" if rank else "")
+        )
     if balls and need and any((r[balls[0]] or 0) < need for r in rows):
         return f"the query must {rank}"
     return None
 
 
-STYLE_FILTER = re.compile(r"\b(bowl_kind|bowl_arm|bowl_style|bat_hand)\s*(=|ILIKE|IN)\s*('[^']*'|\([^)]*\))", re.I)
+STYLE_FILTER = re.compile(
+    r"\b(bowl_kind|bowl_arm|bowl_style|bat_hand)\s*(=|ILIKE|IN)\s*('[^']*'|\([^)]*\))", re.I
+)
 
 
 def notes(question: str, sql: str, cols: list[str]) -> str:
@@ -170,7 +184,10 @@ def notes(question: str, sql: str, cols: list[str]) -> str:
     return "; ".join(out)
 
 
-SUBTYPE = re.compile(r"\b(fast|quick|medium|orthodox|wrist|chinaman|leg[- ]?spin\w*|off[- ]?spin\w*|leg ?break|off ?break)\b", re.I)
+SUBTYPE = re.compile(
+    r"\b(fast|quick|medium|orthodox|wrist|chinaman|leg[- ]?spin\w*|off[- ]?spin\w*|leg ?break|off ?break)\b",
+    re.I,
+)
 
 
 def footnote(question: str, res: dict[str, Any]) -> str:
@@ -179,8 +196,11 @@ def footnote(question: str, res: dict[str, Any]) -> str:
     if not RATE.search(question) or not res.get("rows"):
         return ""
     cols, top = res["cols"], res["rows"][0]
-    counts = [f"{_fmt(top[i])} {c.replace('_', ' ')}" for i, c in enumerate(cols)
-              if not RATE_COL.search(c) and not NOT_COUNT.search(c) and isinstance(top[i], (int, float, Decimal))]
+    counts = [
+        f"{_fmt(top[i])} {c.replace('_', ' ')}"
+        for i, c in enumerate(cols)
+        if not RATE_COL.search(c) and not NOT_COUNT.search(c) and isinstance(top[i], (int, float, Decimal))
+    ]
     out = [("Top row: " if len(res["rows"]) > 1 else "Sample: ") + ", ".join(counts) + "."] if counts else []
     f = {m.group(1).lower(): m.group(3).strip("'").lower() for m in STYLE_FILTER.finditer(res.get("sql", ""))}
     if kind := f.get("bowl_kind"):
